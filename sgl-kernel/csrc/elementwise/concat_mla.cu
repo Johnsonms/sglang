@@ -135,12 +135,12 @@ __global__ void concat_mla_absorb_q_kernel(
   const int flat_warp_id = (blockIdx.x * blockDim.x + threadIdx.x) / 32;
   const int lane_id = get_lane_id();
 
-  const int idx_0 = flat_warp_id / dim_1;
-  const int idx_1 = flat_warp_id % dim_1;
-
   if (flat_warp_id >= num_items) {
     return;
   }
+
+  const int idx_0 = flat_warp_id / dim_1;
+  const int idx_1 = flat_warp_id % dim_1;
 
   using ABufType = int4;
   constexpr int A_NUM_UNROLL = 2;
