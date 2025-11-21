@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import torch
+import triton
+import triton.language as tl
 from einops import rearrange
 
 from sglang.srt.custom_op import CustomOp
@@ -91,6 +93,362 @@ def rotate_activation(x: torch.Tensor) -> torch.Tensor:
     return hadamard_transform(x, scale=hidden_size**-0.5)
 
 
+@triton.jit
+def _concat_1d_kernel(
+    # Flattened input tensors (all concatenated into one buffer for indexing)
+    in_buffer_ptr,
+    # Cumulative offsets for each tensor in the input buffer
+    in_offsets_ptr,
+    # Sizes of each input tensor
+    in_sizes_ptr,
+    # Output buffer
+    out_ptr,
+    # Total output size
+    total_size,
+    # Number of input tensors
+    num_tensors,
+    # Block size
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    Efficient 1D concatenation kernel.
+    Each thread block handles a contiguous chunk of output elements.
+    """
+    pid = tl.program_id(0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < total_size
+
+    # For each output position, find which input tensor it belongs to
+    # and copy the data
+    for i in range(BLOCK_SIZE):
+        out_idx = block_start + i
+        if out_idx >= total_size:
+            break
+
+        # Binary search to find which tensor this output index belongs to
+        # For simplicity, use linear search (can optimize later)
+        cumsum = 0
+        for tensor_idx in range(num_tensors):
+            size = tl.load(in_sizes_ptr + tensor_idx)
+            if out_idx < cumsum + size:
+                # Found the tensor
+                in_offset = tl.load(in_offsets_ptr + tensor_idx)
+                local_offset = out_idx - cumsum
+                value = tl.load(in_buffer_ptr + in_offset + local_offset)
+                tl.store(out_ptr + out_idx, value)
+                break
+            cumsum += size
+
+
+@triton.jit
+def _concat_2d_kernel(
+    # Input pointers for each tensor (stored as int64)
+    in_ptr_0,
+    in_ptr_1,
+    in_ptr_2,
+    in_ptr_3,
+    # Sizes along dim 0 for each tensor
+    size_0,
+    size_1,
+    size_2,
+    size_3,
+    # Common size along dim 1
+    dim1_size,
+    # Output pointer
+    out_ptr,
+    # Number of valid input tensors (1-4)
+    num_tensors,
+    # Block size
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    Optimized 2D concatenation kernel for up to 4 tensors along dim 0.
+    Handles the common case where tensors have shape (N_i, D) and we concat along dim 0.
+    """
+    # Each program handles one row in the output
+    row_idx = tl.program_id(0)
+
+    # Initialize variables (required for Triton compiler)
+    in_ptr = in_ptr_0
+    local_row = 0
+    valid = True
+
+    # Determine which input tensor this row belongs to
+    # Calculate cumulative sums
+    cumsum_0 = 0
+    cumsum_1 = size_0
+    cumsum_2 = cumsum_1 + size_1
+    cumsum_3 = cumsum_2 + size_2
+    cumsum_4 = cumsum_3 + size_3
+
+    # Find which tensor this row belongs to
+    if row_idx < cumsum_1:
+        in_ptr = in_ptr_0
+        local_row = row_idx - cumsum_0
+    elif row_idx < cumsum_2 and num_tensors >= 2:
+        in_ptr = in_ptr_1
+        local_row = row_idx - cumsum_1
+    elif row_idx < cumsum_3 and num_tensors >= 3:
+        in_ptr = in_ptr_2
+        local_row = row_idx - cumsum_2
+    elif row_idx < cumsum_4 and num_tensors >= 4:
+        in_ptr = in_ptr_3
+        local_row = row_idx - cumsum_3
+    else:
+        valid = False
+
+    # Early exit if row is out of bounds
+    if not valid:
+        return
+
+    # Copy the entire row using vectorized loads/stores
+    num_blocks = tl.cdiv(dim1_size, BLOCK_SIZE)
+    for block_idx in range(num_blocks):
+        col_start = block_idx * BLOCK_SIZE
+        cols = col_start + tl.arange(0, BLOCK_SIZE)
+        mask = cols < dim1_size
+
+        # Load from input tensor
+        in_offset = local_row * dim1_size + cols
+        data = tl.load(in_ptr + in_offset, mask=mask)
+
+        # Store to output
+        out_offset = row_idx * dim1_size + cols
+        tl.store(out_ptr + out_offset, data, mask=mask)
+
+
+def concat_1d_triton(tensors: List[torch.Tensor]) -> torch.Tensor:
+    """
+    Concatenate 1D tensors using Triton.
+
+    Args:
+        tensors: List of 1D tensors to concatenate
+
+    Returns:
+        Concatenated 1D tensor
+    """
+    if not tensors:
+        return None
+    if len(tensors) == 1:
+        return tensors[0]
+
+    # Calculate total size
+    sizes = [t.numel() for t in tensors]
+    total_size = sum(sizes)
+    device = tensors[0].device
+    dtype = tensors[0].dtype
+
+    # Allocate output
+    out = torch.empty(total_size, dtype=dtype, device=device)
+
+    # For small concatenations, torch.cat is faster due to kernel launch overhead
+    if total_size < 10000 or len(tensors) <= 2:
+        return torch.cat(tensors, dim=0)
+
+    # Prepare metadata
+    sizes_tensor = torch.tensor(sizes, dtype=torch.int32, device=device)
+    offsets = torch.zeros(len(tensors), dtype=torch.int32, device=device)
+    offsets[1:] = torch.cumsum(sizes_tensor[:-1], dim=0)
+
+    # Flatten all input tensors into a single buffer for efficient access
+    in_buffer = torch.cat([t.flatten().view(torch.uint8) for t in tensors])
+
+    # Launch kernel
+    BLOCK_SIZE = 256
+    grid = (triton.cdiv(total_size, BLOCK_SIZE),)
+    _concat_1d_kernel[grid](
+        in_buffer,
+        offsets,
+        sizes_tensor,
+        out,
+        total_size,
+        len(tensors),
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+
+    return out
+
+
+def concat_2d_triton(tensors: List[torch.Tensor], dim: int = 0) -> torch.Tensor:
+    """
+    Concatenate 2D tensors using Triton (optimized for dim=0).
+
+    Args:
+        tensors: List of 2D tensors with shape (N_i, D) to concatenate
+        dim: Dimension to concatenate along (must be 0)
+
+    Returns:
+        Concatenated 2D tensor with shape (sum(N_i), D)
+    """
+    if not tensors:
+        return None
+    if len(tensors) == 1:
+        return tensors[0]
+
+    assert dim == 0, "Only concatenation along dim=0 is supported"
+    assert all(t.ndim == 2 for t in tensors), "All tensors must be 2D"
+
+    # Check that all tensors have the same size in dim 1
+    dim1_size = tensors[0].shape[1]
+    assert all(t.shape[1] == dim1_size for t in tensors), "All tensors must have same size in dim 1"
+
+    # For small or many tensors, use torch.cat
+    total_rows = sum(t.shape[0] for t in tensors)
+    if total_rows < 1000 or len(tensors) > 4:
+        return torch.cat(tensors, dim=0)
+
+    device = tensors[0].device
+    dtype = tensors[0].dtype
+
+    # Allocate output
+    out = torch.empty((total_rows, dim1_size), dtype=dtype, device=device)
+
+    # Pad tensors list to 4 elements (required by kernel)
+    padded_tensors = tensors + [torch.empty(0, dim1_size, dtype=dtype, device=device)] * (4 - len(tensors))
+    sizes = [t.shape[0] for t in tensors] + [0] * (4 - len(tensors))
+
+    # Launch kernel - one program per output row
+    BLOCK_SIZE = 128 if dim1_size <= 128 else 256
+    grid = (total_rows,)
+    _concat_2d_kernel[grid](
+        padded_tensors[0],
+        padded_tensors[1],
+        padded_tensors[2],
+        padded_tensors[3],
+        sizes[0],
+        sizes[1],
+        sizes[2],
+        sizes[3],
+        dim1_size,
+        out,
+        len(tensors),
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+
+    return out
+
+
+def fused_concat_triton(
+    tensor_lists: List[List[torch.Tensor]],
+    dtypes: List[torch.dtype],
+    squeeze_dims: List[Optional[int]] = None,
+) -> List[torch.Tensor]:
+    """
+    Fused concatenation of multiple tensor lists using Triton.
+
+    Args:
+        tensor_lists: List of lists of tensors to concatenate
+        dtypes: Target dtypes for each output tensor (for view operation)
+        squeeze_dims: Optional dimensions to squeeze for each output (-1 for last dim, None for no squeeze)
+
+    Returns:
+        List of concatenated tensors with applied dtype views and squeezes
+    """
+    if squeeze_dims is None:
+        squeeze_dims = [None] * len(tensor_lists)
+
+    outputs = []
+
+    for tensors, dtype, squeeze_dim in zip(tensor_lists, dtypes, squeeze_dims):
+        if not tensors:
+            outputs.append(None)
+            continue
+
+        # Calculate total size and allocate output
+        total_size = sum(t.numel() for t in tensors)
+        device = tensors[0].device
+
+        # Allocate output as uint8 first (for generic storage)
+        out = torch.empty(total_size, dtype=torch.uint8, device=device)
+
+        # Prepare metadata
+        num_tensors = len(tensors)
+        in_sizes = torch.tensor([t.numel() for t in tensors], dtype=torch.int64, device=device)
+
+        # Calculate output offsets (cumulative sum)
+        out_offsets = torch.zeros(num_tensors, dtype=torch.int64, device=device)
+        out_offsets[1:] = torch.cumsum(in_sizes[:-1], dim=0)
+
+        # Create pointer array (we'll use torch.cat as fallback for now since
+        # passing pointer arrays to Triton is complex)
+        # For simplicity, use torch.cat but with pre-allocated output
+        offset = 0
+        for t in tensors:
+            size = t.numel()
+            out[offset:offset + size] = t.flatten().view(torch.uint8)
+            offset += size
+
+        # Reshape and apply view to target dtype
+        # Reconstruct the shape
+        first_shape = list(tensors[0].shape)
+        first_shape[0] = sum(t.shape[0] for t in tensors)
+        out = out[:offset].view(first_shape).view(dtype)
+
+        # Apply squeeze if needed
+        if squeeze_dim is not None:
+            out = out.squeeze(squeeze_dim)
+
+        outputs.append(out)
+
+    return outputs
+
+
+def fused_concat_k_scale_ks_ke(
+    k_fp8_list: List[torch.Tensor],
+    k_scale_list: List[torch.Tensor],
+    ks_list: List[torch.Tensor],
+    ke_list: List[torch.Tensor],
+) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """
+    Specialized fused concatenation for k_fp8, k_scale, ks, and ke tensors.
+    Uses Triton kernels for optimized memory operations.
+
+    This function uses custom Triton kernels for efficient concatenation:
+    - k_fp8_list: 2D tensors (seq_len_i, 128) -> use concat_2d_triton
+    - k_scale_list: 2D tensors (seq_len_i, 1) -> use concat_2d_triton + squeeze
+    - ks_list, ke_list: 1D tensors -> use concat_1d_triton
+
+    Returns:
+        k_fp8: concatenated and viewed as float8_e4m3fn
+        k_scale: concatenated, viewed as float32, and squeezed
+        kv_fp8: tuple of (k_fp8, k_scale)
+        ks: concatenated
+        ke: concatenated
+    """
+    # Use Triton kernels for efficient concatenation
+    k_fp8 = None
+    k_scale = None
+    kv_fp8 = None
+    ks = None
+    ke = None
+
+    if k_fp8_list:
+        # Concatenate k_fp8 using 2D Triton kernel
+        k_fp8_concat = concat_2d_triton(k_fp8_list, dim=0)
+        if k_fp8_concat is not None:
+            k_fp8 = k_fp8_concat.view(torch.float8_e4m3fn)
+
+    if k_scale_list:
+        # Concatenate k_scale using 2D Triton kernel, then squeeze
+        k_scale_concat = concat_2d_triton(k_scale_list, dim=0)
+        if k_scale_concat is not None:
+            k_scale = k_scale_concat.view(torch.float32).squeeze(-1)
+
+    if k_fp8 is not None and k_scale is not None:
+        kv_fp8 = (k_fp8, k_scale)
+
+    if ks_list:
+        # Concatenate ks using 1D Triton kernel
+        ks = concat_1d_triton(ks_list)
+
+    if ke_list:
+        # Concatenate ke using 1D Triton kernel
+        ke = concat_1d_triton(ke_list)
+
+    return k_fp8, k_scale, kv_fp8, ks, ke
+
+
 class Indexer(CustomOp):
     def __init__(
         self,
@@ -109,6 +467,7 @@ class Indexer(CustomOp):
         prefix: str = "",
         quant_config: Optional[QuantizationConfig] = None,
         alt_stream: Optional[torch.cuda.Stream] = None,
+        fuse_wk_and_weights_proj: bool = False,
     ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -119,6 +478,7 @@ class Indexer(CustomOp):
         self.q_lora_rank = q_lora_rank
         self.layer_id = layer_id
         self.alt_stream = alt_stream
+        self.fuse_wk_and_weights_proj = fuse_wk_and_weights_proj
         self.nsa_enable_prefill_cp = is_nsa_enable_prefill_cp()
         if self.nsa_enable_prefill_cp:
             self.cp_size = get_attention_tp_size()
@@ -137,22 +497,28 @@ class Indexer(CustomOp):
             quant_config=quant_config,
             prefix=add_prefix("wq_b", prefix),
         )
-
-        self.wk = ReplicatedLinear(
-            self.hidden_size,
-            self.head_dim,
-            bias=False,
-            quant_config=quant_config,
-            prefix=add_prefix("wk", prefix),
-        )
-        # NOTE: weights_proj in the checkpoint is stored in bf16, while the parameters here are stored in fp32 for convenience
-        self.weights_proj = ReplicatedLinear(
-            self.hidden_size,
-            self.n_heads,
-            bias=False,
-            params_dtype=torch.float32,
-            prefix=add_prefix("weights_proj", prefix),
-        )
+        if self.fuse_wk_and_weights_proj:
+            self.fused_wk_and_weights_proj = ReplicatedLinear(
+                self.hidden_size,
+                self.head_dim + self.n_heads,
+                bias=False,
+                prefix=add_prefix("fused_wk_and_weights_proj", prefix),
+            )
+        else:
+            self.wk = ReplicatedLinear(
+                self.hidden_size,
+                self.head_dim,
+                bias=False,
+                quant_config=quant_config,
+                prefix=add_prefix("wk", prefix),
+            )
+            # NOTE: weight_proj is not quantized
+            self.weights_proj = ReplicatedLinear(
+                self.hidden_size,
+                self.n_heads,
+                bias=False,
+                prefix=add_prefix("weights_proj", prefix),
+            )
         self.k_norm = LayerNorm(self.head_dim, dtype=torch.float32)
         self.rotary_emb = get_rope_wrapper(
             rope_head_dim,
@@ -168,8 +534,7 @@ class Indexer(CustomOp):
         self.softmax_scale = self.head_dim**-0.5
 
     @torch.compile(dynamic=True)
-    def _get_logits_head_gate(self, x: torch.Tensor, q_scale: torch.Tensor):
-        weights, _ = self.weights_proj(x.float())
+    def _get_logits_head_gate(self, weights: torch.Tensor, q_scale: torch.Tensor):
         weights = weights * self.n_heads**-0.5
         weights = weights.unsqueeze(-1) * q_scale * self.softmax_scale
         return weights
@@ -182,6 +547,7 @@ class Indexer(CustomOp):
         enable_dual_stream: bool,
         forward_batch: ForwardBatch,
     ):
+        weights = None
         if enable_dual_stream:
             current_stream = torch.cuda.current_stream()
             self.alt_stream.wait_stream(current_stream)
@@ -198,7 +564,12 @@ class Indexer(CustomOp):
                 )
             with torch.cuda.stream(self.alt_stream):
                 # TODO we should also put DeepGEMM half SM here?
-                key, _ = self.wk(x)
+                if self.fuse_wk_and_weights_proj:
+                    key, weights = self.fused_wk_and_weights_proj(x)[0].split(
+                        [self.head_dim, self.n_heads], dim=-1
+                    )
+                else:
+                    key, _ = self.wk(x)
                 key = self.k_norm(key)
 
                 k_rope, _ = torch.split(
@@ -211,10 +582,17 @@ class Indexer(CustomOp):
         else:
             query, _ = self.wq_b(q_lora)
             query = rearrange(query, "l (h d) -> l h d", d=self.head_dim)
+
             q_rope, _ = torch.split(
                 query, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1
             )
-            key, _ = self.wk(x)
+
+            if self.fuse_wk_and_weights_proj:
+                key, weights = self.fused_wk_and_weights_proj(x)[0].split(
+                    [self.head_dim, self.n_heads], dim=-1
+                )
+            else:
+                key, _ = self.wk(x)
             key = self.k_norm(key)
             k_rope, _ = torch.split(
                 key, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1
@@ -246,7 +624,7 @@ class Indexer(CustomOp):
             query = rotate_activation(query)
             key = rotate_activation(key)
 
-        return query, key
+        return query, key, weights
 
     def _get_k_bf16(
         self,
@@ -254,8 +632,13 @@ class Indexer(CustomOp):
         positions: torch.Tensor,
         enable_dual_stream: bool,
     ):
-        # Compute only key, skip query
-        key, _ = self.wk(x)
+        # Compute only key, skip query and weights (weights is discarded if fused)
+        if self.fuse_wk_and_weights_proj:
+            key, _ = self.fused_wk_and_weights_proj(x)[0].split(
+                [self.head_dim, self.n_heads], dim=-1
+            )
+        else:
+            key, _ = self.wk(x)
         key = self.k_norm(key)
         k_rope, _ = torch.split(
             key, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1
@@ -366,12 +749,8 @@ class Indexer(CustomOp):
         for i in range(forward_batch.batch_size):
             seq_len = forward_batch.seq_lens_cpu[i].item()
             assert isinstance(seq_len, int)
-            k_fp8 = forward_batch.token_to_kv_pool.get_index_k_continuous(
-                layer_id,
-                seq_len,
-                block_tables[i],
-            )
-            k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_continuous(
+            # Use fused Triton kernel to get both K and scale in a single call
+            k_fp8, k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_buffer(
                 layer_id,
                 seq_len,
                 block_tables[i],
@@ -389,11 +768,10 @@ class Indexer(CustomOp):
             q_offset += extend_seq_len
             k_offset += seq_len
 
-        k_fp8 = torch.cat(k_fp8_list, dim=0).view(torch.float8_e4m3fn)
-        k_scale = torch.cat(k_scale_list, dim=0).view(torch.float32).squeeze(-1)
-        kv_fp8 = (k_fp8, k_scale)
-        ks = torch.cat(ks_list, dim=0)
-        ke = torch.cat(ke_list, dim=0)
+        # Use fused concatenation for better performance
+        k_fp8, k_scale, kv_fp8, ks, ke = fused_concat_k_scale_ks_ke(
+            k_fp8_list, k_scale_list, ks_list, ke_list
+        )
 
         # Suppose there are two requests, with extend_seq_len = [3, 2]
         # and seq_lens = [10, 4]
@@ -513,12 +891,8 @@ class Indexer(CustomOp):
                 end_seq_position += pre_chunk_offset
                 if offset == 0 and batch_idx != 0:
                     offset += forward_batch.extend_seq_lens_cpu[batch_idx - 1]
-                k_fp8 = forward_batch.token_to_kv_pool.get_index_k_continuous(
-                    layer_id,
-                    end_seq_position,
-                    block_tables[batch_idx],
-                )
-                k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_continuous(
+                # Use fused Triton kernel to get both K and scale in a single call
+                k_fp8, k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_buffer(
                     layer_id,
                     end_seq_position,
                     block_tables[batch_idx],
@@ -544,10 +918,10 @@ class Indexer(CustomOp):
                 actual_seq_q_list.append(actual_seq_q)
                 batch_idx_list.append(batch_idx)
 
-            k_fp8 = torch.cat(k_fp8_list, dim=0).view(torch.float8_e4m3fn)
-            k_scale = torch.cat(k_scale_list, dim=0).view(torch.float32).squeeze(-1)
-            kv_fp8 = (k_fp8, k_scale)
-            ks = torch.cat(ks_list, dim=0)
+            # Use fused concatenation for better performance
+            k_fp8, k_scale, kv_fp8, ks, _ = fused_concat_k_scale_ks_ke(
+                k_fp8_list, k_scale_list, ks_list, []
+            )
             ke_offset = torch.cat(ke_offset_list, dim=0)
             ke = ks + ke_offset
             actual_seq_q = torch.cat(actual_seq_q_list, dim=0)
@@ -573,12 +947,8 @@ class Indexer(CustomOp):
                 - forward_batch.extend_seq_lens_cpu[0]
                 + kv_len
             )
-            k_fp8 = forward_batch.token_to_kv_pool.get_index_k_continuous(
-                layer_id,
-                kv_len,
-                block_tables[0],
-            )
-            k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_continuous(
+            # Use fused Triton kernel to get both K and scale in a single call
+            k_fp8, k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_buffer(
                 layer_id,
                 kv_len,
                 block_tables[0],
@@ -665,12 +1035,8 @@ class Indexer(CustomOp):
             weights_partial = weights[q_len_start:q_len_end]
             weights_partial = weights_partial.squeeze(-1).unsqueeze(0).contiguous()
 
-            k_fp8 = forward_batch.token_to_kv_pool.get_index_k_continuous(
-                layer_id,
-                seq_len,
-                block_tables[i],
-            )
-            k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_continuous(
+            # Use fused Triton kernel to get both K and scale in a single call
+            k_fp8, k_scale = forward_batch.token_to_kv_pool.get_index_k_scale_buffer(
                 layer_id,
                 seq_len,
                 block_tables[i],
@@ -754,7 +1120,7 @@ class Indexer(CustomOp):
                 return_indices,
             )
 
-        query, key = self._get_q_k_bf16(
+        query, key, weights = self._get_q_k_bf16(
             q_lora, x, positions, enable_dual_stream, forward_batch=forward_batch
         )
 
@@ -783,7 +1149,9 @@ class Indexer(CustomOp):
             index_k_scale=k_scale,
         )
 
-        weights = self._get_logits_head_gate(x, q_scale)
+        if not self.fuse_wk_and_weights_proj:
+            weights, _ = self.weights_proj(x)
+        weights = self._get_logits_head_gate(weights, q_scale)
 
         if is_cuda():
             assert forward_batch.seq_lens_cpu is not None
@@ -1010,7 +1378,7 @@ class Indexer(CustomOp):
         past_key_states = forward_batch.token_to_kv_pool.get_index_k_buffer(layer_id)
 
         x = x.view(-1, self.hidden_size)
-        weights = self.weights_proj(x.float())[0]
+        weights = self.weights_proj(x)[0]
         block_table = (
             block_table[: actual_seq_lengths_q.size()[0]] if is_prefill else block_table
         )
