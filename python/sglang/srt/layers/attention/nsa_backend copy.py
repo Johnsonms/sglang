@@ -16,11 +16,6 @@ from sglang.srt.layers.attention.nsa.transform_index import (
     transform_index_page_table_decode,
     transform_index_page_table_prefill,
 )
-from sglang.srt.layers.attention.nsa.triton_batched_copy import (
-    batched_copy_decode_to_3_backends,
-    batched_copy_draft_extend_to_3_backends,
-    batched_copy_target_verify_to_3_backends,
-)
 from sglang.srt.layers.attention.nsa.utils import (
     NSA_FLASHMLA_BACKEND_DECODE_COMPUTE_FP8,
     NSA_FUSE_TOPK,
@@ -313,16 +308,7 @@ class NativeSparseAttnBackend(AttentionBackend):
 
         self._arange_buf = torch.arange(16384, device=self.device, dtype=torch.int32)
 
-        # Pre-allocated static buffers for common batch sizes
-        # These batch sizes are commonly used in CUDA graph replay
-        self._common_batch_sizes = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 40, 44, 48]
-        self._cu_seqlens_static_bufs = {
-            bs: torch.zeros(bs + 1, device=self.device, dtype=torch.int32)
-            for bs in self._common_batch_sizes
-        }
-        self._nsa_cu_seqlens_static_bufs = {}  # Populated on-demand for different sizes
-
-        # Fallback dynamic buffers for uncommon sizes
+        # Pre-allocated buffers for cumulative sums to avoid repeated allocations
         self._cu_seqlens_buf = torch.zeros(16384, device=self.device, dtype=torch.int32)
         self._nsa_cu_seqlens_buf = torch.zeros(16384, device=self.device, dtype=torch.int32)
 
@@ -369,23 +355,17 @@ class NativeSparseAttnBackend(AttentionBackend):
         """Get a zero-initialized buffer for cumulative sequence lengths.
 
         Args:
-            size: Required buffer size (typically bs + 1)
+            size: Required buffer size (typically bs + 1 or seqlens_expanded_size + 1)
 
         Returns:
-            A tensor of length `size` with [0] guaranteed to be 0
+            A tensor slice [:size] from pre-allocated buffer, with [0] guaranteed to be 0
         """
-        # Fast path: use pre-allocated static buffer for common batch sizes
-        if size in self._cu_seqlens_static_bufs:
-            buf = self._cu_seqlens_static_bufs[size]
-            buf[0] = 0  # Ensure first element is 0
-            return buf
-
-        # Slow path: use dynamic buffer for uncommon sizes
         if size > len(self._cu_seqlens_buf):
             next_pow_of_2 = 1 << (size - 1).bit_length()
             self._cu_seqlens_buf = torch.zeros(
                 next_pow_of_2, device=self.device, dtype=torch.int32
             )
+        # Ensure first element is 0 (it should already be, but make it explicit)
         self._cu_seqlens_buf[0] = 0
         return self._cu_seqlens_buf[:size]
 
@@ -396,26 +376,14 @@ class NativeSparseAttnBackend(AttentionBackend):
             size: Required buffer size (typically seqlens_expanded_size + 1)
 
         Returns:
-            A tensor of length `size` with [0] guaranteed to be 0
+            A tensor slice [:size] from pre-allocated buffer, with [0] guaranteed to be 0
         """
-        # Fast path: use cached static buffer if available
-        if size in self._nsa_cu_seqlens_static_bufs:
-            buf = self._nsa_cu_seqlens_static_bufs[size]
-            buf[0] = 0  # Ensure first element is 0
-            return buf
-
-        # Create and cache static buffer for this size if it's reasonable
-        if size <= 1024:  # Cache buffers up to reasonable size
-            buf = torch.zeros(size, device=self.device, dtype=torch.int32)
-            self._nsa_cu_seqlens_static_bufs[size] = buf
-            return buf
-
-        # Slow path: use dynamic buffer for very large sizes
         if size > len(self._nsa_cu_seqlens_buf):
             next_pow_of_2 = 1 << (size - 1).bit_length()
             self._nsa_cu_seqlens_buf = torch.zeros(
                 next_pow_of_2, device=self.device, dtype=torch.int32
             )
+        # Ensure first element is 0 (it should already be, but make it explicit)
         self._nsa_cu_seqlens_buf[0] = 0
         return self._nsa_cu_seqlens_buf[:size]
 
@@ -1024,8 +992,8 @@ class NativeSparseAttnBackend(AttentionBackend):
 
         # Convert to int32 and compute cumsum
         cache_seqlens = seq_lens.to(torch.int32)
-        # Store only the cumsum (without leading 0 padding) since we only copy [1:]
-        cu_seqlens_k = torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32)
+        cu_seqlens_k = self.get_cu_seqlens_buffer(bs + 1)
+        cu_seqlens_k[1:].copy_(torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32))
 
         # Get page indices from cache
         page_indices = self.req_to_token[req_pool_indices, :max_len]
@@ -1037,8 +1005,9 @@ class NativeSparseAttnBackend(AttentionBackend):
         seqlens_expanded = cache_seqlens
         seqlens_expanded_size = seqlens_expanded.shape[0]
 
-        # Compute NSA cumsum (without leading 0 padding)
-        nsa_cu_seqlens_k = torch.cumsum(nsa_cache_seqlens, dim=0, dtype=torch.int32)
+        # Compute NSA cumsum
+        nsa_cu_seqlens_k = self.get_nsa_cu_seqlens_buffer(bs + 1)
+        nsa_cu_seqlens_k[1:].copy_(torch.cumsum(nsa_cache_seqlens, dim=0, dtype=torch.int32))
 
         # Transform page table if needed
         if self.real_page_size > 1:
@@ -1082,8 +1051,8 @@ class NativeSparseAttnBackend(AttentionBackend):
 
         # Cache seqlens with draft tokens
         cache_seqlens = (seq_lens + self.speculative_num_draft_tokens).to(torch.int32)
-        # Store only the cumsum (without leading 0 padding) since we only copy [1:]
-        cu_seqlens_k = torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32)
+        cu_seqlens_k = self.get_cu_seqlens_buffer(bs + 1)
+        cu_seqlens_k[1:].copy_(torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32))
 
         # Page indices (repeated for each draft token)
         page_indices = self.req_to_token[req_pool_indices, :max_seqlen_k]
@@ -1119,8 +1088,9 @@ class NativeSparseAttnBackend(AttentionBackend):
         )
         seqlens_expanded_size = seqlens_expanded.shape[0]
 
-        # NSA cumsum (without leading 0 padding)
-        nsa_cu_seqlens_k = torch.cumsum(nsa_cache_seqlens, dim=0, dtype=torch.int32)
+        # NSA cumsum
+        nsa_cu_seqlens_k = self.get_nsa_cu_seqlens_buffer(seqlens_expanded_size + 1)
+        nsa_cu_seqlens_k[1:].copy_(torch.cumsum(nsa_cache_seqlens, dim=0, dtype=torch.int32))
 
         # Transform page table
         if self.real_page_size > 1:
@@ -1163,8 +1133,8 @@ class NativeSparseAttnBackend(AttentionBackend):
 
         # Cache seqlens
         cache_seqlens = seq_lens.to(torch.int32)
-        # Store only the cumsum (without leading 0 padding) since we only copy [1:]
-        cu_seqlens_k = torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32)
+        cu_seqlens_k = self.get_cu_seqlens_buffer(bs + 1)
+        cu_seqlens_k[1:].copy_(torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32))
 
         # Extend seqlens from spec_info
         extend_seq_lens = spec_info.accept_length[:bs]
@@ -1199,8 +1169,9 @@ class NativeSparseAttnBackend(AttentionBackend):
         )
         seqlens_expanded_size = seqlens_expanded.shape[0]
 
-        # NSA cumsum (without leading 0 padding)
-        nsa_cu_seqlens_k = torch.cumsum(nsa_cache_seqlens, dim=0, dtype=torch.int32)
+        # NSA cumsum
+        nsa_cu_seqlens_k = self.get_nsa_cu_seqlens_buffer(seqlens_expanded_size + 1)
+        nsa_cu_seqlens_k[1:].copy_(torch.cumsum(nsa_cache_seqlens, dim=0, dtype=torch.int32))
 
         # Transform page table
         if self.real_page_size > 1:
@@ -1252,8 +1223,7 @@ class NativeSparseAttnBackend(AttentionBackend):
 
         # Copy basic seqlens
         metadata.cache_seqlens_int32.copy_(precomputed.cache_seqlens)
-        # Precomputed cu_seqlens_k no longer has leading 0, so copy directly to [1:]
-        metadata.cu_seqlens_k[1:].copy_(precomputed.cu_seqlens_k)
+        metadata.cu_seqlens_k[1:].copy_(precomputed.cu_seqlens_k[1:])
 
         # Mode-specific copy logic
         if forward_mode.is_decode_or_idle():
@@ -1282,9 +1252,9 @@ class NativeSparseAttnBackend(AttentionBackend):
             metadata.nsa_seqlens_expanded[:size].copy_(precomputed.seqlens_expanded)
             metadata.nsa_cache_seqlens_int32[:size].copy_(precomputed.nsa_cache_seqlens)
 
-        # Copy NSA cu_seqlens (precomputed no longer has leading 0)
+        # Copy NSA cu_seqlens
         size = precomputed.seqlens_expanded_size
-        metadata.nsa_cu_seqlens_k[1:1+size].copy_(precomputed.nsa_cu_seqlens_k[:size])
+        metadata.nsa_cu_seqlens_k[1:1+size].copy_(precomputed.nsa_cu_seqlens_k[1:1+size])
 
         # Copy real page table
         if precomputed.real_page_table is not None:
@@ -2056,55 +2026,17 @@ class NativeSparseAttnMultiStepBackend:
     def init_forward_metadata_replay_cuda_graph(
         self, forward_batch: ForwardBatch, bs: int
     ):
-        # Ultra-optimized: Compute metadata once, then use fused Triton kernel
-        # to copy from 1 source to 3 backends in a single kernel launch
-        forward_mode = forward_batch.forward_mode
+        # Optimized: Use a cache for precomputed metadata
+        # First backend computes and applies, subsequent backends copy from cache
+        precomputed_cache = None
 
-        # First backend: compute the precomputed metadata
-        precomputed = self.attn_backends[0]._precompute_replay_metadata(
-            bs=bs,
-            req_pool_indices=forward_batch.req_pool_indices,
-            seq_lens=forward_batch.seq_lens,
-            seq_lens_cpu=forward_batch.seq_lens_cpu,
-            forward_mode=forward_mode,
-            spec_info=forward_batch.spec_info,
-        )
-
-        # Get metadata objects for all 3 backends
-        assert self.speculative_num_steps == 3, "Triton batched copy supports exactly 3 backends"
-        metadata_b0 = self.attn_backends[0].decode_cuda_graph_metadata[bs]
-        metadata_b1 = self.attn_backends[1].decode_cuda_graph_metadata[bs]
-        metadata_b2 = self.attn_backends[2].decode_cuda_graph_metadata[bs]
-
-        # Call set_nsa_prefill_impl for all backends
         for i in range(self.speculative_num_steps):
-            self.attn_backends[i].set_nsa_prefill_impl(forward_batch=None)
-
-        # Use fused Triton kernel based on forward mode (1 kernel launch for all 3 backends)
-        if forward_mode.is_decode_or_idle():
-            batched_copy_decode_to_3_backends(
-                precomputed=precomputed,
-                metadata_b0=metadata_b0,
-                metadata_b1=metadata_b1,
-                metadata_b2=metadata_b2,
+            precomputed_cache = self.attn_backends[i].init_forward_metadata_replay_cuda_graph_with_cache(
+                bs=bs,
+                req_pool_indices=forward_batch.req_pool_indices,
+                seq_lens=forward_batch.seq_lens,
+                seq_lens_cpu=forward_batch.seq_lens_cpu,
+                forward_mode=ForwardMode.DECODE,
+                spec_info=forward_batch.spec_info,
+                precomputed_cache=precomputed_cache,
             )
-        elif forward_mode.is_target_verify():
-            batched_copy_target_verify_to_3_backends(
-                precomputed=precomputed,
-                metadata_b0=metadata_b0,
-                metadata_b1=metadata_b1,
-                metadata_b2=metadata_b2,
-            )
-        elif forward_mode.is_draft_extend():
-            batched_copy_draft_extend_to_3_backends(
-                precomputed=precomputed,
-                metadata_b0=metadata_b0,
-                metadata_b1=metadata_b1,
-                metadata_b2=metadata_b2,
-            )
-        else:
-            raise ValueError(f"Unsupported forward mode: {forward_mode}")
-
-        # Update forward_metadata for all backends
-        for i in range(self.speculative_num_steps):
-            self.attn_backends[i].forward_metadata = self.attn_backends[i].decode_cuda_graph_metadata[bs]
