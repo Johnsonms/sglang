@@ -123,6 +123,31 @@ int64_t cutlass_mla_get_workspace_size(
     int64_t sm_count = 0,
     int64_t num_kv_splits = 1 /* Set to 1 to avoid cuda_graph issue by default. */);
 
+void fused_metadata_copy_cuda(
+    torch::Tensor cache_seqlens_src,
+    torch::Tensor cu_seqlens_k_src,
+    torch::Tensor page_indices_src,
+    torch::Tensor nsa_cache_seqlens_src,
+    torch::Tensor seqlens_expanded_src,
+    torch::Tensor nsa_cu_seqlens_k_src,
+    c10::optional<torch::Tensor> real_page_table_src,
+    c10::optional<torch::Tensor> flashmla_num_splits_src,
+    c10::optional<torch::Tensor> flashmla_metadata_src,
+    torch::Tensor cache_seqlens_dst,
+    torch::Tensor cu_seqlens_k_dst,
+    torch::Tensor page_table_1_dst,
+    torch::Tensor nsa_cache_seqlens_dst,
+    torch::Tensor seqlens_expanded_dst,
+    torch::Tensor nsa_cu_seqlens_k_dst,
+    c10::optional<torch::Tensor> real_page_table_dst,
+    c10::optional<torch::Tensor> flashmla_num_splits_dst,
+    c10::optional<torch::Tensor> flashmla_metadata_dst,
+    int64_t forward_mode,
+    int64_t bs,
+    int64_t max_len,
+    int64_t max_seqlen_k,
+    int64_t seqlens_expanded_size);
+
 /*
  * From csrc/elementwise
  */

@@ -130,3 +130,86 @@ def cutlass_mla_get_workspace_size(
     return torch.ops.sgl_kernel.cutlass_mla_get_workspace_size.default(
         max_seq_len, num_batches, sm_count, num_kv_splits
     )
+
+
+def fused_metadata_copy_cuda(
+    cache_seqlens_src: torch.Tensor,
+    cu_seqlens_k_src: torch.Tensor,
+    page_indices_src: torch.Tensor,
+    nsa_cache_seqlens_src: torch.Tensor,
+    seqlens_expanded_src: torch.Tensor,
+    nsa_cu_seqlens_k_src: torch.Tensor,
+    real_page_table_src: Optional[torch.Tensor],
+    flashmla_num_splits_src: Optional[torch.Tensor],
+    flashmla_metadata_src: Optional[torch.Tensor],
+    cache_seqlens_dst: torch.Tensor,
+    cu_seqlens_k_dst: torch.Tensor,
+    page_table_1_dst: torch.Tensor,
+    nsa_cache_seqlens_dst: torch.Tensor,
+    seqlens_expanded_dst: torch.Tensor,
+    nsa_cu_seqlens_k_dst: torch.Tensor,
+    real_page_table_dst: Optional[torch.Tensor],
+    flashmla_num_splits_dst: Optional[torch.Tensor],
+    flashmla_metadata_dst: Optional[torch.Tensor],
+    forward_mode: int,
+    bs: int,
+    max_len: int,
+    max_seqlen_k: int,
+    seqlens_expanded_size: int,
+) -> None:
+    """
+    Fused metadata copy kernel for NSA backend CUDA graph replay.
+
+    This function fuses multiple tensor copy operations into a single kernel launch,
+    reducing kernel launch overhead and improving performance.
+
+    Args:
+        cache_seqlens_src: Source cache sequence lengths [bs]
+        cu_seqlens_k_src: Source cumulative sequence lengths [bs+1]
+        page_indices_src: Source page indices [rows, max_len]
+        nsa_cache_seqlens_src: Source NSA cache sequence lengths [size]
+        seqlens_expanded_src: Source expanded sequence lengths [size]
+        nsa_cu_seqlens_k_src: Source NSA cumulative sequence lengths [size+1]
+        real_page_table_src: Optional source real page table [rows, cols]
+        flashmla_num_splits_src: Optional source FlashMLA num_splits [size+1]
+        flashmla_metadata_src: Optional source FlashMLA metadata tensor
+        cache_seqlens_dst: Destination cache sequence lengths [bs]
+        cu_seqlens_k_dst: Destination cumulative sequence lengths [bs+1]
+        page_table_1_dst: Destination page table [rows, stride]
+        nsa_cache_seqlens_dst: Destination NSA cache sequence lengths [size]
+        seqlens_expanded_dst: Destination expanded sequence lengths [size]
+        nsa_cu_seqlens_k_dst: Destination NSA cumulative sequence lengths [size+1]
+        real_page_table_dst: Optional destination real page table [rows, cols]
+        flashmla_num_splits_dst: Optional destination FlashMLA num_splits [size+1]
+        flashmla_metadata_dst: Optional destination FlashMLA metadata tensor
+        forward_mode: Forward mode (0=DECODE, 1=TARGET_VERIFY, 2=DRAFT_EXTEND)
+        bs: Batch size
+        max_len: Maximum length for decode/draft_extend mode
+        max_seqlen_k: Maximum sequence length for target_verify mode
+        seqlens_expanded_size: Size of expanded sequence lengths
+    """
+    torch.ops.sgl_kernel.fused_metadata_copy_cuda.default(
+        cache_seqlens_src,
+        cu_seqlens_k_src,
+        page_indices_src,
+        nsa_cache_seqlens_src,
+        seqlens_expanded_src,
+        nsa_cu_seqlens_k_src,
+        real_page_table_src,
+        flashmla_num_splits_src,
+        flashmla_metadata_src,
+        cache_seqlens_dst,
+        cu_seqlens_k_dst,
+        page_table_1_dst,
+        nsa_cache_seqlens_dst,
+        seqlens_expanded_dst,
+        nsa_cu_seqlens_k_dst,
+        real_page_table_dst,
+        flashmla_num_splits_dst,
+        flashmla_metadata_dst,
+        forward_mode,
+        bs,
+        max_len,
+        max_seqlen_k,
+        seqlens_expanded_size,
+    )

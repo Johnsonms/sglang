@@ -60,6 +60,16 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
   m.impl("cutlass_mla_decode", torch::kCUDA, &cutlass_mla_decode);
   m.def("cutlass_mla_get_workspace_size", &cutlass_mla_get_workspace_size);
 
+  m.def(
+      "fused_metadata_copy_cuda(Tensor cache_seqlens_src, Tensor cu_seqlens_k_src, Tensor page_indices_src, "
+      "Tensor nsa_cache_seqlens_src, Tensor seqlens_expanded_src, Tensor nsa_cu_seqlens_k_src, "
+      "Tensor? real_page_table_src, Tensor? flashmla_num_splits_src, Tensor? flashmla_metadata_src, "
+      "Tensor! cache_seqlens_dst, Tensor! cu_seqlens_k_dst, Tensor! page_table_1_dst, "
+      "Tensor! nsa_cache_seqlens_dst, Tensor! seqlens_expanded_dst, Tensor! nsa_cu_seqlens_k_dst, "
+      "Tensor? real_page_table_dst, Tensor? flashmla_num_splits_dst, Tensor? flashmla_metadata_dst, "
+      "int forward_mode, int bs, int max_len, int max_seqlen_k, int seqlens_expanded_size) -> ()");
+  m.impl("fused_metadata_copy_cuda", torch::kCUDA, &fused_metadata_copy_cuda);
+
   /*
    * From csrc/elementwise
    */
