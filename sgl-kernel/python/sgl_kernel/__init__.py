@@ -14,8 +14,12 @@ from sgl_kernel.attention import (
     cutlass_mla_decode,
     cutlass_mla_get_workspace_size,
     fused_metadata_copy_cuda,
+    fused_metadata_precompute_and_broadcast_cuda,
     merge_state,
     merge_state_v2,
+    precompute_decode_metadata_cuda,
+    unified_decode_metadata_cuda,
+    unified_decode_metadata_cuda_direct,
 )
 from sgl_kernel.cutlass_moe import cutlass_w4a8_moe_mm, get_cutlass_w4a8_moe_mm_data
 from sgl_kernel.elementwise import (

@@ -53,12 +53,13 @@ __global__ void fused_metadata_copy_decode_kernel(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = gridDim.x * blockDim.x;
 
-    if (tid == 0 && blockIdx.x == 0) {
-        printf("===== DECODE KERNEL START: HAS_REAL=%d, HAS_FLASHMLA=%d =====\n",
-               (int)HAS_REAL_PAGE_TABLE, (int)HAS_FLASHMLA);
-        printf("bs=%d, max_len=%d, real_cols=%d, real_dst_stride=%d\n",
-               bs, max_len, real_page_table_cols, real_page_table_dst_stride);
-    }
+    // Debug output (commented out for production)
+    // if (tid == 0 && blockIdx.x == 0) {
+    //     printf("===== DECODE KERNEL START: HAS_REAL=%d, HAS_FLASHMLA=%d =====\n",
+    //            (int)HAS_REAL_PAGE_TABLE, (int)HAS_FLASHMLA);
+    //     printf("bs=%d, max_len=%d, real_cols=%d, real_dst_stride=%d\n",
+    //            bs, max_len, real_page_table_cols, real_page_table_dst_stride);
+    // }
 
     // Copy cache_seqlens (bs elements)
     #pragma unroll 8
@@ -97,26 +98,26 @@ __global__ void fused_metadata_copy_decode_kernel(
     //if constexpr (HAS_REAL_PAGE_TABLE) {
     if (real_page_table_src != nullptr && real_page_table_dst != nullptr) {
         int real_table_elements = bs * real_page_table_cols;
-        // Debug: print once from first thread
-        if (tid == 0) {
-            printf("CUDA Kernel DECODE: bs=%d, real_page_table_cols=%d, real_page_table_dst_stride=%d, elements=%d\n",
-                   bs, real_page_table_cols, real_page_table_dst_stride, real_table_elements);
-            // Print first few values from source
-            printf("Source[0]=%d, Source[64]=%d, Source[128]=%d\n",
-                   real_page_table_src[0], real_page_table_src[64], real_page_table_src[128]);
-        }
+        // Debug: print once from first thread (commented out for production)
+        // if (tid == 0) {
+        //     printf("CUDA Kernel DECODE: bs=%d, real_page_table_cols=%d, real_page_table_dst_stride=%d, elements=%d\n",
+        //            bs, real_page_table_cols, real_page_table_dst_stride, real_table_elements);
+        //     // Print first few values from source
+        //     printf("Source[0]=%d, Source[64]=%d, Source[128]=%d\n",
+        //            real_page_table_src[0], real_page_table_src[64], real_page_table_src[128]);
+        // }
         #pragma unroll 2
         for (int i = tid; i < real_table_elements; i += total_threads) {
             int row = i / real_page_table_cols;
             int col = i % real_page_table_cols;
             int src_idx = row * real_page_table_cols + col;
 
-            // TEMPORARY DEBUG: Check if stride value is correct
-            int test_dst_stride = real_page_table_dst_stride;
-            if (tid == 0 && i == 0) {
-                printf("KERNEL: real_page_table_cols=%d, real_page_table_dst_stride=%d\n",
-                       real_page_table_cols, test_dst_stride);
-            }
+            // TEMPORARY DEBUG: Check if stride value is correct (commented out for production)
+            // int test_dst_stride = real_page_table_dst_stride;
+            // if (tid == 0 && i == 0) {
+            //     printf("KERNEL: real_page_table_cols=%d, real_page_table_dst_stride=%d\n",
+            //            real_page_table_cols, test_dst_stride);
+            // }
 
             int dst_idx = row * real_page_table_dst_stride + col;
             real_page_table_dst[dst_idx] = real_page_table_src[src_idx];
@@ -393,11 +394,12 @@ void fused_metadata_copy_cuda(
     const int32_t* real_table_src_ptr = nullptr;
     int32_t* real_table_dst_ptr = nullptr;
 
-    fprintf(stderr, "=== ENTER fused_metadata_copy_cuda, forward_mode=%ld, bs=%ld ===\n",
-            forward_mode, bs);
-    fprintf(stderr, "real_page_table_src.has_value()=%d, real_page_table_dst.has_value()=%d\n",
-            real_page_table_src.has_value(), real_page_table_dst.has_value());
-    fflush(stderr);
+    // Debug output (commented out for production)
+    // fprintf(stderr, "=== ENTER fused_metadata_copy_cuda, forward_mode=%ld, bs=%ld ===\n",
+    //         forward_mode, bs);
+    // fprintf(stderr, "real_page_table_src.has_value()=%d, real_page_table_dst.has_value()=%d\n",
+    //         real_page_table_src.has_value(), real_page_table_dst.has_value());
+    // fflush(stderr);
 
     if (real_page_table_src.has_value() && real_page_table_dst.has_value()) {
         has_real_page_table = true;
@@ -549,12 +551,12 @@ void fused_metadata_copy_cuda(
             );
         }
 
-        // Debug: Check for CUDA errors and synchronize to flush printf
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            printf("CUDA kernel launch error: %s\n", cudaGetErrorString(err));
-        }
-        cudaDeviceSynchronize();  // Force synchronization to flush printf output
+        // Debug: Check for CUDA errors and synchronize to flush printf (commented out for production)
+        // cudaError_t err = cudaGetLastError();
+        // if (err != cudaSuccess) {
+        //     printf("CUDA kernel launch error: %s\n", cudaGetErrorString(err));
+        // }
+        // cudaDeviceSynchronize();  // Force synchronization to flush printf output
     } else if (forward_mode == TARGET_VERIFY) {
         if (has_real_page_table && has_flashmla_metadata) {
             fused_metadata_copy_target_verify_kernel<true, true><<<num_blocks, threads_per_block, 0, stream>>>(

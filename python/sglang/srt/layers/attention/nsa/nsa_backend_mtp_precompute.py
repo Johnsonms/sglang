@@ -122,30 +122,80 @@ class NativeSparseAttnBackendMTPPrecomputeMixin:
         """Precompute metadata for normal decode mode."""
         max_len = int(seq_lens_cpu.max().item())
 
-        # Convert to int32 and compute cumsum
-        cache_seqlens = seq_lens.to(torch.int32)
-        cu_seqlens_k = compute_cu_seqlens(cache_seqlens)
+        # Try to use fused CUDA kernel for better performance
+        use_fused_kernel = False
+        try:
+            from sgl_kernel import precompute_decode_metadata_cuda
+            # Only use kernel if batch size is reasonable (<=256)
+            if bs <= 256:
+                use_fused_kernel = True
+        except ImportError:
+            pass
 
-        # Get page indices from cache
-        page_indices = self.req_to_token[req_pool_indices, :max_len]
+        if use_fused_kernel:
+            # Allocate output tensors
+            cache_seqlens = torch.empty(bs, dtype=torch.int32, device=self.device)
+            cu_seqlens_k = torch.empty(bs + 1, dtype=torch.int32, device=self.device)
+            page_indices = torch.empty(
+                (bs, max_len), dtype=torch.int32, device=self.device
+            )
+            nsa_cache_seqlens = torch.empty(bs, dtype=torch.int32, device=self.device)
+            nsa_cu_seqlens_k = torch.empty(
+                bs + 1, dtype=torch.int32, device=self.device
+            )
 
-        # Compute NSA seqlens
-        nsa_cache_seqlens = compute_nsa_seqlens(
-            cache_seqlens, nsa_index_topk=self.nsa_index_topk
-        )
-        seqlens_expanded = cache_seqlens
-        seqlens_expanded_size = seqlens_expanded.shape[0]
+            # Allocate real_page_table if needed
+            if self.real_page_size > 1:
+                real_page_table_cols = (max_len + self.real_page_size - 1) // self.real_page_size
+                real_page_table = torch.empty(
+                    (bs, real_page_table_cols), dtype=torch.int32, device=self.device
+                )
+            else:
+                real_page_table = None
 
-        # Compute NSA cumsum
-        nsa_cu_seqlens_k = compute_cu_seqlens(nsa_cache_seqlens)
+            # Call fused kernel
+            precompute_decode_metadata_cuda(
+                seq_lens,
+                req_pool_indices,
+                self.req_to_token,
+                cache_seqlens,
+                cu_seqlens_k,
+                page_indices,
+                nsa_cache_seqlens,
+                nsa_cu_seqlens_k,
+                real_page_table,
+                max_len,
+                self.nsa_index_topk,
+                self.real_page_size,
+            )
 
-        # Transform page table if needed
-        if self.real_page_size > 1:
-            real_page_table = self._transform_table_1_to_real(page_indices)
+            seqlens_expanded = cache_seqlens
+            seqlens_expanded_size = seqlens_expanded.shape[0]
         else:
-            real_page_table = None  # Will use page_indices directly
+            # Fallback to original Python implementation
+            cache_seqlens = seq_lens.to(torch.int32)
+            cu_seqlens_k = compute_cu_seqlens(cache_seqlens)
 
-        # Compute FlashMLA metadata if needed
+            # Get page indices from cache
+            page_indices = self.req_to_token[req_pool_indices, :max_len]
+
+            # Compute NSA seqlens
+            nsa_cache_seqlens = compute_nsa_seqlens(
+                cache_seqlens, nsa_index_topk=self.nsa_index_topk
+            )
+            seqlens_expanded = cache_seqlens
+            seqlens_expanded_size = seqlens_expanded.shape[0]
+
+            # Compute NSA cumsum
+            nsa_cu_seqlens_k = compute_cu_seqlens(nsa_cache_seqlens)
+
+            # Transform page table if needed
+            if self.real_page_size > 1:
+                real_page_table = self._transform_table_1_to_real(page_indices)
+            else:
+                real_page_table = None  # Will use page_indices directly
+
+        # Compute FlashMLA metadata if needed (not included in fused kernel)
         flashmla_metadata = None
         if self.nsa_decode_impl == "flashmla_kv":
             flashmla_metadata = self._compute_flashmla_metadata(

@@ -70,6 +70,37 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "int forward_mode, int bs, int max_len, int max_seqlen_k, int seqlens_expanded_size) -> ()");
   m.impl("fused_metadata_copy_cuda", torch::kCUDA, &fused_metadata_copy_cuda);
 
+  m.def(
+      "precompute_decode_metadata_cuda(Tensor seq_lens, Tensor req_pool_indices, Tensor req_to_token, "
+      "Tensor! cache_seqlens, Tensor! cu_seqlens_k, Tensor! page_indices, "
+      "Tensor! nsa_cache_seqlens, Tensor! nsa_cu_seqlens_k, Tensor? real_page_table, "
+      "int max_len, int nsa_index_topk, int real_page_size) -> ()");
+  m.impl("precompute_decode_metadata_cuda", torch::kCUDA, &precompute_decode_metadata_cuda);
+
+  m.def(
+      "fused_metadata_precompute_and_broadcast_cuda(Tensor seq_lens, Tensor req_pool_indices, Tensor req_to_token, "
+      "Tensor backend_pointers, int max_len, int page_indices_dst_stride, int nsa_index_topk, int real_page_size, "
+      "int real_page_table_cols, int real_page_table_dst_stride) -> ()");
+  m.impl("fused_metadata_precompute_and_broadcast_cuda", torch::kCUDA, &fused_metadata_precompute_and_broadcast_cuda);
+
+  m.def(
+      "unified_decode_metadata_cuda(Tensor seq_lens, Tensor req_pool_indices, Tensor req_to_token, "
+      "Tensor backend_pointers, int max_len_allocated, int nsa_index_topk, int real_page_size, "
+      "int real_page_table_cols, int real_page_table_dst_stride) -> ()");
+  m.impl("unified_decode_metadata_cuda", torch::kCUDA, &unified_decode_metadata_cuda);
+
+  m.def(
+      "unified_decode_metadata_cuda_direct(Tensor seq_lens, Tensor req_pool_indices, Tensor req_to_token, "
+      "int cache_seqlens_ptr0, int cu_seqlens_k_ptr0, int page_indices_ptr0, "
+      "int nsa_cache_seqlens_ptr0, int nsa_cu_seqlens_k_ptr0, int real_page_table_ptr0, int seqlens_expanded_ptr0, "
+      "int cache_seqlens_ptr1, int cu_seqlens_k_ptr1, int page_indices_ptr1, "
+      "int nsa_cache_seqlens_ptr1, int nsa_cu_seqlens_k_ptr1, int real_page_table_ptr1, int seqlens_expanded_ptr1, "
+      "int cache_seqlens_ptr2, int cu_seqlens_k_ptr2, int page_indices_ptr2, "
+      "int nsa_cache_seqlens_ptr2, int nsa_cu_seqlens_k_ptr2, int real_page_table_ptr2, int seqlens_expanded_ptr2, "
+      "int num_backends, int max_len_allocated, int nsa_index_topk, int real_page_size, "
+      "int real_page_table_cols, int real_page_table_dst_stride) -> ()");
+  m.impl("unified_decode_metadata_cuda_direct", torch::kCUDA, &unified_decode_metadata_cuda_direct);
+
   /*
    * From csrc/elementwise
    */

@@ -148,6 +148,63 @@ void fused_metadata_copy_cuda(
     int64_t max_seqlen_k,
     int64_t seqlens_expanded_size);
 
+void precompute_decode_metadata_cuda(
+    torch::Tensor seq_lens,
+    torch::Tensor req_pool_indices,
+    torch::Tensor req_to_token,
+    torch::Tensor cache_seqlens,
+    torch::Tensor cu_seqlens_k,
+    torch::Tensor page_indices,
+    torch::Tensor nsa_cache_seqlens,
+    torch::Tensor nsa_cu_seqlens_k,
+    c10::optional<torch::Tensor> real_page_table,
+    int64_t max_len,
+    int64_t nsa_index_topk,
+    int64_t real_page_size);
+
+void fused_metadata_precompute_and_broadcast_cuda(
+    torch::Tensor seq_lens,
+    torch::Tensor req_pool_indices,
+    torch::Tensor req_to_token,
+    torch::Tensor backend_pointers,
+    int64_t max_len,
+    int64_t page_indices_dst_stride,
+    int64_t nsa_index_topk,
+    int64_t real_page_size,
+    int64_t real_page_table_cols,
+    int64_t real_page_table_dst_stride);
+
+void unified_decode_metadata_cuda(
+    torch::Tensor seq_lens,
+    torch::Tensor req_pool_indices,
+    torch::Tensor req_to_token,
+    torch::Tensor backend_pointers,
+    int64_t max_len_allocated,
+    int64_t nsa_index_topk,
+    int64_t real_page_size,
+    int64_t real_page_table_cols,
+    int64_t real_page_table_dst_stride);
+
+void unified_decode_metadata_cuda_direct(
+    torch::Tensor seq_lens,
+    torch::Tensor req_pool_indices,
+    torch::Tensor req_to_token,
+    int64_t cache_seqlens_ptr0, int64_t cu_seqlens_k_ptr0, int64_t page_indices_ptr0,
+    int64_t nsa_cache_seqlens_ptr0, int64_t nsa_cu_seqlens_k_ptr0,
+    int64_t real_page_table_ptr0, int64_t seqlens_expanded_ptr0,
+    int64_t cache_seqlens_ptr1, int64_t cu_seqlens_k_ptr1, int64_t page_indices_ptr1,
+    int64_t nsa_cache_seqlens_ptr1, int64_t nsa_cu_seqlens_k_ptr1,
+    int64_t real_page_table_ptr1, int64_t seqlens_expanded_ptr1,
+    int64_t cache_seqlens_ptr2, int64_t cu_seqlens_k_ptr2, int64_t page_indices_ptr2,
+    int64_t nsa_cache_seqlens_ptr2, int64_t nsa_cu_seqlens_k_ptr2,
+    int64_t real_page_table_ptr2, int64_t seqlens_expanded_ptr2,
+    int64_t num_backends,
+    int64_t max_len_allocated,
+    int64_t nsa_index_topk,
+    int64_t real_page_size,
+    int64_t real_page_table_cols,
+    int64_t real_page_table_dst_stride);
+
 /*
  * From csrc/elementwise
  */
