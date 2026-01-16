@@ -13,6 +13,9 @@ from sgl_kernel.allreduce import *
 from sgl_kernel.attention import (
     cutlass_mla_decode,
     cutlass_mla_get_workspace_size,
+    fill_draft_extend_metadata_cuda,
+    fill_draft_extend_metadata_cuda_adaptive,
+    fill_draft_extend_metadata_cuda_optimized,
     merge_state,
     merge_state_v2,
 )

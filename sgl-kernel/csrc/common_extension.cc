@@ -59,6 +59,18 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "page_table, Tensor! workspace, float sm_scale, int num_kv_splits) -> ()");
   m.impl("cutlass_mla_decode", torch::kCUDA, &cutlass_mla_decode);
   m.def("cutlass_mla_get_workspace_size", &cutlass_mla_get_workspace_size);
+  m.def(
+      "fill_draft_extend_metadata_cuda(Tensor extend_seq_lens, Tensor seq_lens, int nsa_index_topk, "
+      "Tensor! out_seqlens_expanded, Tensor! out_nsa_cache_seqlens) -> Tensor");
+  m.impl("fill_draft_extend_metadata_cuda", torch::kCUDA, &fill_draft_extend_metadata_cuda);
+  m.def(
+      "fill_draft_extend_metadata_cuda_adaptive(Tensor extend_seq_lens, Tensor seq_lens, int nsa_index_topk, "
+      "Tensor! out_seqlens_expanded, Tensor! out_nsa_cache_seqlens) -> Tensor");
+  m.impl("fill_draft_extend_metadata_cuda_adaptive", torch::kCUDA, &fill_draft_extend_metadata_cuda_adaptive);
+  m.def(
+      "fill_draft_extend_metadata_cuda_optimized(Tensor extend_seq_lens, Tensor seq_lens, int nsa_index_topk, "
+      "Tensor! out_seqlens_expanded, Tensor! out_nsa_cache_seqlens) -> Tensor");
+  m.impl("fill_draft_extend_metadata_cuda_optimized", torch::kCUDA, &fill_draft_extend_metadata_cuda_optimized);
 
   /*
    * From csrc/elementwise

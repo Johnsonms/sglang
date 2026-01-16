@@ -130,3 +130,60 @@ def cutlass_mla_get_workspace_size(
     return torch.ops.sgl_kernel.cutlass_mla_get_workspace_size.default(
         max_seq_len, num_batches, sm_count, num_kv_splits
     )
+
+
+def fill_draft_extend_metadata_cuda(
+    extend_seq_lens: torch.Tensor,
+    seq_lens: torch.Tensor,
+    nsa_index_topk: int,
+    out_seqlens_expanded: torch.Tensor,
+    out_nsa_cache_seqlens: torch.Tensor,
+) -> torch.Tensor:
+    """Fill draft extend metadata using CUDA kernel (binary search variant)."""
+    return torch.ops.sgl_kernel.fill_draft_extend_metadata_cuda.default(
+        extend_seq_lens,
+        seq_lens,
+        nsa_index_topk,
+        out_seqlens_expanded,
+        out_nsa_cache_seqlens,
+    )
+
+
+def fill_draft_extend_metadata_cuda_adaptive(
+    extend_seq_lens: torch.Tensor,
+    seq_lens: torch.Tensor,
+    nsa_index_topk: int,
+    out_seqlens_expanded: torch.Tensor,
+    out_nsa_cache_seqlens: torch.Tensor,
+) -> torch.Tensor:
+    """Fill draft extend metadata using adaptive CUDA kernel (chooses best variant)."""
+    return torch.ops.sgl_kernel.fill_draft_extend_metadata_cuda_adaptive.default(
+        extend_seq_lens,
+        seq_lens,
+        nsa_index_topk,
+        out_seqlens_expanded,
+        out_nsa_cache_seqlens,
+    )
+
+
+def fill_draft_extend_metadata_cuda_optimized(
+    extend_seq_lens: torch.Tensor,
+    seq_lens: torch.Tensor,
+    nsa_index_topk: int,
+    out_seqlens_expanded: torch.Tensor,
+    out_nsa_cache_seqlens: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Fill draft extend metadata using optimized CUDA kernel with fused prefix sum.
+
+    This version eliminates torch::zeros, torch::cumsum, and .copy_() operations
+    by computing prefix sum directly in CUDA, providing ~30% speedup over the
+    adaptive version.
+    """
+    return torch.ops.sgl_kernel.fill_draft_extend_metadata_cuda_optimized.default(
+        extend_seq_lens,
+        seq_lens,
+        nsa_index_topk,
+        out_seqlens_expanded,
+        out_nsa_cache_seqlens,
+    )

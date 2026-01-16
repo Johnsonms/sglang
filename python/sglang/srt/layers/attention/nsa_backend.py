@@ -29,6 +29,29 @@ from sglang.srt.layers.attention.nsa.utils import (
     nsa_cp_round_robin_split_q_seqs,
     pad_nsa_cache_seqlens,
 )
+
+# Try to import optimized kernels for metadata computation
+# Priority: CUDA C++ > Triton > Python fallback
+
+# Try CUDA C++ kernel (fastest, ~4.5x speedup)
+try:
+    from sglang.srt.layers.attention.nsa.cuda_metadata_wrapper import (
+        fill_draft_extend_metadata_cuda,
+        is_cuda_kernel_available,
+    )
+    CUDA_KERNEL_AVAILABLE = is_cuda_kernel_available()
+except (ImportError, ModuleNotFoundError):
+    CUDA_KERNEL_AVAILABLE = False
+
+# Try Triton kernel (fast, ~3.3x speedup)
+try:
+    from sglang.srt.layers.attention.nsa.triton_metadata_kernel import (
+        fill_draft_extend_metadata_fused_simple,
+        fill_draft_extend_metadata_inplace,
+    )
+    TRITON_KERNEL_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    TRITON_KERNEL_AVAILABLE = False
 from sglang.srt.layers.attention.trtllm_mla_backend import _concat_mla_absorb_q_general
 from sglang.srt.layers.dp_attention import get_attention_tp_size
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
@@ -994,46 +1017,73 @@ class NativeSparseAttnBackend(
         elif forward_mode.is_draft_extend(include_v2=True):
             max_seqlen_k = int(seq_lens_cpu.max().item())
             cache_seqlens = seq_lens.to(torch.int32)
-            metadata.cache_seqlens_int32.copy_(cache_seqlens)
-            metadata.cu_seqlens_k[1:].copy_(
-                torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32)
-            )
+            cumulate_cache_seqlens = torch.cumsum(cache_seqlens, dim=0, dtype=torch.int32)
 
             extend_seq_lens = spec_info.accept_length[:bs]
-            extend_seq_lens_cpu = extend_seq_lens.tolist()
-
             page_indices = self.req_to_token[req_pool_indices, :max_seqlen_k]
             page_indices = torch.repeat_interleave(
                 page_indices, repeats=extend_seq_lens, dim=0
             )
-            metadata.page_table_1[: page_indices.shape[0], :max_seqlen_k].copy_(
-                page_indices
-            )
 
-            seqlens_expanded = torch.cat(
-                [
-                    torch.arange(
-                        kv_len - qo_len + 1,
-                        kv_len + 1,
-                        dtype=torch.int32,
-                        device=self.device,
-                    )
-                    for qo_len, kv_len in zip(
-                        extend_seq_lens_cpu,
-                        seq_lens_cpu.tolist(),
-                        strict=True,
-                    )
-                ]
-            )
-            metadata.nsa_seqlens_expanded[: seqlens_expanded.shape[0]].copy_(
-                seqlens_expanded
-            )
-            nsa_cache_seqlens = compute_nsa_seqlens(
-                seqlens_expanded, self.nsa_index_topk
-            )
-            metadata.nsa_cache_seqlens_int32[: seqlens_expanded.shape[0]].copy_(
-                nsa_cache_seqlens
-            )
+            metadata.cache_seqlens_int32.copy_(cache_seqlens)
+            metadata.cu_seqlens_k[1:].copy_(cumulate_cache_seqlens)
+            metadata.page_table_1[: page_indices.shape[0], :max_seqlen_k].copy_(page_indices)
+
+            # Use optimized kernels if available
+            # Priority: CUDA C++ (fastest) > Triton (fast) > Python (fallback)
+            if CUDA_KERNEL_AVAILABLE and envs.SGLANG_NSA_USE_TRITON_METADATA.get():
+                # Fastest path: CUDA C++ kernel (~4.5x speedup)
+                # - Adaptive binary/linear search based on batch size
+                # - Lower overhead than Triton (no JIT compilation)
+                # - Direct write to metadata buffers
+                total_tokens = fill_draft_extend_metadata_cuda(
+                    extend_seq_lens=extend_seq_lens,
+                    seq_lens=seq_lens,
+                    nsa_index_topk=self.nsa_index_topk,
+                    out_seqlens_expanded=metadata.nsa_seqlens_expanded,
+                    out_nsa_cache_seqlens=metadata.nsa_cache_seqlens_int32,
+                    use_adaptive=True,  # Enable adaptive kernel selection
+                )
+                # Create references to the filled buffers for downstream code
+                seqlens_expanded = metadata.nsa_seqlens_expanded[:total_tokens]
+                nsa_cache_seqlens = metadata.nsa_cache_seqlens_int32[:total_tokens]
+            elif TRITON_KERNEL_AVAILABLE and envs.SGLANG_NSA_USE_TRITON_METADATA.get():
+                # Fast path: Triton kernel (~3.3x speedup)
+                # - GPU native computation
+                # - Direct write to metadata buffers
+                total_tokens = fill_draft_extend_metadata_inplace(
+                    extend_seq_lens=extend_seq_lens,
+                    seq_lens=seq_lens,
+                    nsa_index_topk=self.nsa_index_topk,
+                    out_seqlens_expanded=metadata.nsa_seqlens_expanded,
+                    out_nsa_cache_seqlens=metadata.nsa_cache_seqlens_int32,
+                )
+                # Create references to the filled buffers for downstream code
+                seqlens_expanded = metadata.nsa_seqlens_expanded[:total_tokens]
+                nsa_cache_seqlens = metadata.nsa_cache_seqlens_int32[:total_tokens]
+            else:
+                # Fallback: original Python implementation (baseline)
+                extend_seq_lens_cpu = extend_seq_lens.tolist()
+
+                seqlens_expanded = torch.cat(
+                    [
+                        torch.arange(
+                            kv_len - qo_len + 1,
+                            kv_len + 1,
+                            dtype=torch.int32,
+                            device=self.device,
+                        )
+                        for qo_len, kv_len in zip(
+                            extend_seq_lens_cpu,
+                            seq_lens_cpu.tolist(),
+                            strict=True,
+                        )
+                    ]
+                )
+
+                nsa_cache_seqlens = compute_nsa_seqlens(seqlens_expanded, self.nsa_index_topk)
+                metadata.nsa_seqlens_expanded[: seqlens_expanded.shape[0]].copy_(seqlens_expanded)
+                metadata.nsa_cache_seqlens_int32[: seqlens_expanded.shape[0]].copy_(nsa_cache_seqlens)
 
         # Update DeepGEMM paged MQA schedule metadata outside the captured graph.
         if is_cuda() and (

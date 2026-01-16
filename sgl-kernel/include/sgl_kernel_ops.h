@@ -122,6 +122,24 @@ int64_t cutlass_mla_get_workspace_size(
     int64_t num_batches,
     int64_t sm_count = 0,
     int64_t num_kv_splits = 1 /* Set to 1 to avoid cuda_graph issue by default. */);
+at::Tensor fill_draft_extend_metadata_cuda(
+    at::Tensor extend_seq_lens,
+    at::Tensor seq_lens,
+    int64_t nsa_index_topk,
+    at::Tensor out_seqlens_expanded,
+    at::Tensor out_nsa_cache_seqlens);
+at::Tensor fill_draft_extend_metadata_cuda_adaptive(
+    at::Tensor extend_seq_lens,
+    at::Tensor seq_lens,
+    int64_t nsa_index_topk,
+    at::Tensor out_seqlens_expanded,
+    at::Tensor out_nsa_cache_seqlens);
+at::Tensor fill_draft_extend_metadata_cuda_optimized(
+    at::Tensor extend_seq_lens,
+    at::Tensor seq_lens,
+    int64_t nsa_index_topk,
+    at::Tensor out_seqlens_expanded,
+    at::Tensor out_nsa_cache_seqlens);
 
 /*
  * From csrc/elementwise
