@@ -179,6 +179,15 @@ def fused_metadata_copy_cuda(
     flashmla_num_splits_dst_arg = _make_empty_tensor_if_none(flashmla_num_splits_dst)
     flashmla_metadata_dst_arg = _make_empty_tensor_if_none(flashmla_metadata_dst)
 
+    # Ensure all source tensors are contiguous (required for kernel's linear indexing)
+    # This matches the CHECK_INPUT checks in the verified sgl-kernel implementation
+    cache_seqlens_src = cache_seqlens_src.contiguous()
+    cu_seqlens_k_src = cu_seqlens_k_src.contiguous()
+    page_indices_src = page_indices_src.contiguous()
+    nsa_cache_seqlens_src = nsa_cache_seqlens_src.contiguous()
+    seqlens_expanded_src = seqlens_expanded_src.contiguous()
+    nsa_cu_seqlens_k_src = nsa_cu_seqlens_k_src.contiguous()
+
     # Call JIT-compiled kernel
     module.fused_metadata_copy(
         cache_seqlens_src,
@@ -294,6 +303,14 @@ def fused_metadata_copy_multi_cuda(
     real_page_table_dst2_arg = _make_empty_tensor_if_none(real_page_table_dst2)
     flashmla_num_splits_dst2_arg = _make_empty_tensor_if_none(flashmla_num_splits_dst2)
     flashmla_metadata_dst2_arg = _make_empty_tensor_if_none(flashmla_metadata_dst2)
+
+    # Ensure all source tensors are contiguous (required for kernel's linear indexing)
+    # This matches the CHECK_INPUT checks in the verified sgl-kernel implementation
+    cache_seqlens_src = cache_seqlens_src.contiguous()
+    cu_seqlens_k_src = cu_seqlens_k_src.contiguous()
+    page_indices_src = page_indices_src.contiguous()
+    nsa_cache_seqlens_src = nsa_cache_seqlens_src.contiguous()
+    nsa_cu_seqlens_k_src = nsa_cu_seqlens_k_src.contiguous()
 
     # Call JIT-compiled kernel
     module.fused_metadata_copy_multi(

@@ -574,12 +574,21 @@ struct FusedMetadataCopyKernel {
         flashmla_metadata_dst.data_ptr() ? static_cast<int32_t*>(flashmla_metadata_dst.data_ptr()) : nullptr;
 
     // Calculate additional parameters
+    int page_indices_rows = page_indices_src.shape()[0];
     int page_table_1_stride = page_table_1_dst.shape()[1];
     int real_page_table_cols = real_page_table_src.data_ptr() ? real_page_table_src.shape()[1] : 0;
-    int real_page_table_dst_stride = real_page_table_dst.data_ptr() ? real_page_table_dst.shape()[1] : 0;
-    int flashmla_metadata_size = flashmla_metadata_src.data_ptr() ? flashmla_metadata_src.shape()[0] : 0;
+    int real_page_table_dst_stride = real_page_table_dst.data_ptr() ? real_page_table_dst.stride(0) : 0;
+    int flashmla_metadata_size = flashmla_metadata_src.data_ptr() ? flashmla_metadata_src.numel() : 0;
 
-    dim3 grid = get_launch_config(bs * max_len);
+    // Calculate grid configuration (unified for all modes like verified version)
+    int max_elements = std::max(
+        {bs,
+         page_indices_rows * max_seqlen_k,
+         seqlens_expanded_size,
+         HAS_FLASHMLA ? (seqlens_expanded_size + 1) : 0,
+         HAS_FLASHMLA ? flashmla_metadata_size : 0});
+
+    dim3 grid = get_launch_config(max_elements);
     dim3 block(THREADS_PER_BLOCK);
 
     if constexpr (FORWARD_MODE == 0) {  // DECODE
@@ -608,7 +617,6 @@ struct FusedMetadataCopyKernel {
           real_page_table_dst_stride,
           flashmla_metadata_size);
     } else if constexpr (FORWARD_MODE == 1) {  // TARGET_VERIFY
-      int page_indices_rows = page_indices_src.shape()[0];
       fused_metadata_copy_target_verify_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA><<<grid, block>>>(
           cache_seqlens_src_ptr,
           cu_seqlens_k_src_ptr,
@@ -637,7 +645,6 @@ struct FusedMetadataCopyKernel {
           real_page_table_dst_stride,
           flashmla_metadata_size);
     } else if constexpr (FORWARD_MODE == 2) {  // DRAFT_EXTEND
-      int page_indices_rows = page_indices_src.shape()[0];
       fused_metadata_copy_draft_extend_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA><<<grid, block>>>(
           cache_seqlens_src_ptr,
           cu_seqlens_k_src_ptr,
@@ -658,7 +665,7 @@ struct FusedMetadataCopyKernel {
           flashmla_num_splits_dst_ptr,
           flashmla_metadata_dst_ptr,
           bs,
-          max_len,
+          max_seqlen_k,
           seqlens_expanded_size,
           page_indices_rows,
           page_table_1_stride,
@@ -780,8 +787,8 @@ struct FusedMetadataCopyMultiKernel {
     // Calculate additional parameters
     int page_table_1_stride = page_table_1_dst0.shape()[1];
     int real_page_table_cols = real_page_table_src.data_ptr() ? real_page_table_src.shape()[1] : 0;
-    int real_page_table_dst_stride = real_page_table_dst0.data_ptr() ? real_page_table_dst0.shape()[1] : 0;
-    int flashmla_metadata_size = flashmla_metadata_src.data_ptr() ? flashmla_metadata_src.shape()[0] : 0;
+    int real_page_table_dst_stride = real_page_table_dst0.data_ptr() ? real_page_table_dst0.stride(0) : 0;
+    int flashmla_metadata_size = flashmla_metadata_src.data_ptr() ? flashmla_metadata_src.numel() : 0;
 
     dim3 grid = get_launch_config(bs * max_len);
     dim3 block(THREADS_PER_BLOCK);
