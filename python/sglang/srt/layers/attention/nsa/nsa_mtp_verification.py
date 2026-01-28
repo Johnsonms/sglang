@@ -94,9 +94,7 @@ def verify_single_backend_fused_metadata_copy(
 
     # Copy NSA cu_seqlens
     size = precomputed.seqlens_expanded_size
-    ref_nsa_cu_seqlens_k[1 : 1 + size].copy_(
-        precomputed.nsa_cu_seqlens_k[1 : 1 + size]
-    )
+    ref_nsa_cu_seqlens_k[1 : 1 + size].copy_(precomputed.nsa_cu_seqlens_k[1 : 1 + size])
 
     # Copy real page table
     if precomputed.real_page_table is not None:
@@ -204,8 +202,6 @@ def verify_single_backend_fused_metadata_copy(
             fused_flashmla_metadata,
             ref_flashmla_metadata,
         )
-
-    print(f"[VERIFY] ✓ Verification passed for bs={bs}, mode={forward_mode}")
 
 
 def verify_multi_backend_fused_metadata_copy(
