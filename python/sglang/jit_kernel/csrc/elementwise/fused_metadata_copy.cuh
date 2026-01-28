@@ -474,6 +474,8 @@ __global__ void fused_metadata_copy_decode_multi_kernel(
 #include <sgl_kernel/tensor.h>
 #include <sgl_kernel/utils.h>
 
+#include <sgl_kernel/utils.cuh>
+
 #include <tvm/ffi/container/tensor.h>
 
 #include <algorithm>  // for std::min
@@ -591,8 +593,12 @@ struct FusedMetadataCopyKernel {
     dim3 grid = get_launch_config(max_elements);
     dim3 block(THREADS_PER_BLOCK);
 
+    // Get DLDevice from tensor for proper stream resolution
+    DLDevice device = cache_seqlens_src.device();
+
     if constexpr (FORWARD_MODE == 0) {  // DECODE
-      fused_metadata_copy_decode_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA><<<grid, block>>>(
+      host::LaunchKernel(grid, block, device)(
+          fused_metadata_copy_decode_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA>,
           cache_seqlens_src_ptr,
           cu_seqlens_k_src_ptr,
           page_indices_src_ptr,
@@ -617,7 +623,8 @@ struct FusedMetadataCopyKernel {
           real_page_table_dst_stride,
           flashmla_metadata_size);
     } else if constexpr (FORWARD_MODE == 1) {  // TARGET_VERIFY
-      fused_metadata_copy_target_verify_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA><<<grid, block>>>(
+      host::LaunchKernel(grid, block, device)(
+          fused_metadata_copy_target_verify_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA>,
           cache_seqlens_src_ptr,
           cu_seqlens_k_src_ptr,
           page_indices_src_ptr,
@@ -645,7 +652,8 @@ struct FusedMetadataCopyKernel {
           real_page_table_dst_stride,
           flashmla_metadata_size);
     } else if constexpr (FORWARD_MODE == 2) {  // DRAFT_EXTEND
-      fused_metadata_copy_draft_extend_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA><<<grid, block>>>(
+      host::LaunchKernel(grid, block, device)(
+          fused_metadata_copy_draft_extend_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA>,
           cache_seqlens_src_ptr,
           cu_seqlens_k_src_ptr,
           page_indices_src_ptr,
@@ -793,7 +801,11 @@ struct FusedMetadataCopyMultiKernel {
     dim3 grid = get_launch_config(bs * max_len);
     dim3 block(THREADS_PER_BLOCK);
 
-    fused_metadata_copy_decode_multi_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA><<<grid, block>>>(
+    // Get DLDevice from tensor for proper stream resolution
+    DLDevice device = cache_seqlens_src.device();
+
+    host::LaunchKernel(grid, block, device)(
+        fused_metadata_copy_decode_multi_kernel<HAS_REAL_PAGE_TABLE, HAS_FLASHMLA>,
         cache_seqlens_src_ptr,
         cu_seqlens_k_src_ptr,
         page_indices_src_ptr,
