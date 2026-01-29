@@ -1,0 +1,2 @@
+gpu-dp-x2vff-7gdx4.t-a6a11fbd-ac58-4b9a-9b5b-e7b6ef3cc583.s1.us-central-4b.cloud.together.ai slots=8
+gpu-dp-x2vff-xjx42.t-a6a11fbd-ac58-4b9a-9b5b-e7b6ef3cc583.s1.us-central-4b.cloud.together.ai slots=8

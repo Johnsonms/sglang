@@ -1,0 +1,2 @@
+gpu-dp-x2vff-7gdx4 slots=8
+gpu-dp-x2vff-xjx42 slots=8
