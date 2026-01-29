@@ -1,0 +1,230 @@
+2026-01-29 10:19:51,718 - __main__ - INFO - ======================================================================
+2026-01-29 10:19:51,718 - __main__ - INFO - JAX All-Reduce Bandwidth Benchmark
+2026-01-29 10:19:51,718 - __main__ - INFO - ======================================================================
+2026-01-29 10:19:51,718 - __main__ - INFO - JAX version: 0.6.2
+2026-01-29 10:19:51,788 - __main__ - INFO - ======================================================================
+2026-01-29 10:19:51,788 - __main__ - INFO - JAX All-Reduce Bandwidth Benchmark
+2026-01-29 10:19:51,788 - __main__ - INFO - ======================================================================
+2026-01-29 10:19:51,788 - __main__ - INFO - JAX version: 0.6.2
+INFO:2026-01-29 10:19:54,544:jax._src.xla_bridge:752: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+2026-01-29 10:19:54,544 - jax._src.xla_bridge - INFO - Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+INFO:2026-01-29 10:19:54,640:jax._src.xla_bridge:752: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+2026-01-29 10:19:54,640 - jax._src.xla_bridge - INFO - Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+2026-01-29 10:19:55,843 - __main__ - INFO - Number of devices: 8
+2026-01-29 10:19:55,844 - __main__ - INFO - Device type: gpu
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 0: cuda:0
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 1: cuda:1
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 2: cuda:2
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 3: cuda:3
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 4: cuda:4
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 5: cuda:5
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 6: cuda:6
+2026-01-29 10:19:55,844 - __main__ - INFO - Device 7: cuda:7
+2026-01-29 10:19:55,844 - __main__ - INFO - ======================================================================
+2026-01-29 10:19:55,844 - __main__ - INFO - 
+Testing with 2.0 GB buffer per device...
+2026-01-29 10:19:55,844 - __main__ - INFO - Running all-reduce bandwidth test: 8 devices, 2.15 GB per device, 100 iterations
+2026-01-29 10:19:55,937 - __main__ - INFO - Number of devices: 8
+2026-01-29 10:19:55,937 - __main__ - INFO - Device type: gpu
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 0: cuda:0
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 1: cuda:1
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 2: cuda:2
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 3: cuda:3
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 4: cuda:4
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 5: cuda:5
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 6: cuda:6
+2026-01-29 10:19:55,937 - __main__ - INFO - Device 7: cuda:7
+2026-01-29 10:19:55,937 - __main__ - INFO - ======================================================================
+2026-01-29 10:19:55,937 - __main__ - INFO - 
+Testing with 2.0 GB buffer per device...
+2026-01-29 10:19:55,937 - __main__ - INFO - Running all-reduce bandwidth test: 8 devices, 2.15 GB per device, 100 iterations
+2026-01-29 10:20:08,995 - __main__ - INFO - Correctness check passed
+2026-01-29 10:20:09,297 - __main__ - INFO - Correctness check passed
+2026-01-29 10:20:10,642 - __main__ - INFO - Algorithm bandwidth: 268.56 GB/s
+2026-01-29 10:20:10,642 - __main__ - INFO - Bus bandwidth: 469.98 GB/s
+2026-01-29 10:20:10,669 - __main__ - INFO - ----------------------------------------------------------------------
+2026-01-29 10:20:10,669 - __main__ - INFO - 
+Testing with 4.0 GB buffer per device...
+2026-01-29 10:20:10,669 - __main__ - INFO - Running all-reduce bandwidth test: 8 devices, 4.29 GB per device, 100 iterations
+2026-01-29 10:20:10,941 - __main__ - INFO - Algorithm bandwidth: 269.10 GB/s
+2026-01-29 10:20:10,941 - __main__ - INFO - Bus bandwidth: 470.93 GB/s
+2026-01-29 10:20:10,973 - __main__ - INFO - ----------------------------------------------------------------------
+2026-01-29 10:20:10,974 - __main__ - INFO - 
+Testing with 4.0 GB buffer per device...
+2026-01-29 10:20:10,974 - __main__ - INFO - Running all-reduce bandwidth test: 8 devices, 4.29 GB per device, 100 iterations
+2026-01-29 10:20:13.405998: W external/xla/xla/hlo/transforms/simplifiers/hlo_rematerialization.cc:3023] Can't reduce memory use below 52.62GiB (56502496449 bytes) by rematerialization; only reduced to 68.00GiB (73014444052 bytes), down from 68.00GiB (73014444052 bytes) originally
+2026-01-29 10:20:13,513 - __main__ - INFO - Correctness check passed
+2026-01-29 10:20:14.472750: W external/xla/xla/hlo/transforms/simplifiers/hlo_rematerialization.cc:3023] Can't reduce memory use below 52.62GiB (56502496449 bytes) by rematerialization; only reduced to 68.00GiB (73014444052 bytes), down from 68.00GiB (73014444052 bytes) originally
+2026-01-29 10:20:14,581 - __main__ - INFO - Correctness check passed
+2026-01-29 10:20:16,716 - __main__ - INFO - Algorithm bandwidth: 271.94 GB/s
+2026-01-29 10:20:16,716 - __main__ - INFO - Bus bandwidth: 475.89 GB/s
+2026-01-29 10:20:16,730 - __main__ - INFO - ----------------------------------------------------------------------
+2026-01-29 10:20:16,730 - __main__ - INFO - 
+Testing with 8.0 GB buffer per device...
+2026-01-29 10:20:16,730 - __main__ - INFO - Running all-reduce bandwidth test: 8 devices, 8.59 GB per device, 100 iterations
+2026-01-29 10:20:17,784 - __main__ - INFO - Algorithm bandwidth: 272.08 GB/s
+2026-01-29 10:20:17,784 - __main__ - INFO - Bus bandwidth: 476.15 GB/s
+2026-01-29 10:20:17,809 - __main__ - INFO - ----------------------------------------------------------------------
+2026-01-29 10:20:17,809 - __main__ - INFO - 
+Testing with 8.0 GB buffer per device...
+2026-01-29 10:20:17,809 - __main__ - INFO - Running all-reduce bandwidth test: 8 devices, 8.59 GB per device, 100 iterations
+2026-01-29 10:20:22.239415: W external/xla/xla/hlo/transforms/simplifiers/hlo_rematerialization.cc:3023] Can't reduce memory use below 48.82GiB (52422277518 bytes) by rematerialization; only reduced to 136.00GiB (146028888084 bytes), down from 136.00GiB (146028888084 bytes) originally
+2026-01-29 10:20:28.648652: W external/xla/xla/hlo/transforms/simplifiers/hlo_rematerialization.cc:3023] Can't reduce memory use below 48.82GiB (52422277518 bytes) by rematerialization; only reduced to 136.00GiB (146028888084 bytes), down from 136.00GiB (146028888084 bytes) originally
+2026-01-29 10:20:32.263157: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_0_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263187: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_1_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263258: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+2026-01-29 10:20:32.263266: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:32.263277  286884 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:32.263358: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_7_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263407: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:32.263415  286905 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:32.263421: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_3_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263436: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_6_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263477: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+2026-01-29 10:20:32.263482: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:32.263486  286902 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+E0129 10:20:32.263485  286893 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:32.263508: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_5_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263515: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_2_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263554: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+2026-01-29 10:20:32.263560: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:32.263560  286899 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+E0129 10:20:32.263564  286890 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+E0129 10:20:32.263277  286887 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:32.263578: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_4_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:32.263611: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:32.263615  286896 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:32,273 - __main__ - ERROR - Error during bandwidth test, check NCCL/NVLink/InfiniBand status.
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/data/home/johnson/benchmark/physical-intelligence-run-complete.py", line 87, in estimate_all_reduce_bandwidth
+    actual_sample = float(check_result[0, 0])
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/array.py", line 382, in __getitem__
+    return indexing.rewriting_take(self, idx)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/numpy/indexing.py", line 653, in rewriting_take
+    return internal_gather(arr, dynamic_idx)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/numpy/indexing.py", line 684, in _gather
+    y = lax.gather(
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/lax/slicing.py", line 424, in gather
+    return gather_p.bind(
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 536, in bind
+    return self._true_bind(*args, **params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 552, in _true_bind
+    return self.bind_with_trace(prev_trace, args, params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 562, in bind_with_trace
+    return trace.process_primitive(self, args, params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 1066, in process_primitive
+    return primitive.impl(*args, **params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/dispatch.py", line 91, in apply_primitive
+    outs = fun(*args)
+jaxlib._jax.XlaRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes.: while running replica 0 and partition 0 of a replicated computation (other replicas may have failed as well).
+2026-01-29 10:20:32,274 - __main__ - ERROR - Benchmark failed for buffer size 8.0 GB
+2026-01-29 10:20:32,274 - __main__ - INFO - ----------------------------------------------------------------------
+2026-01-29 10:20:32,274 - __main__ - INFO - 
+Benchmark completed!
+2026-01-29 10:20:38.673259: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_1_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673327: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_2_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673344: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+2026-01-29 10:20:38.673393: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:38.673369  171985 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+E0129 10:20:38.673405  171988 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:38.673429: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_7_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673436: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_6_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673483: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+2026-01-29 10:20:38.673487: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:38.673494  172003 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+E0129 10:20:38.673491  172000 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:38.673521: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_5_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673527: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_4_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673564: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+2026-01-29 10:20:38.673577: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:38.673571  171997 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+E0129 10:20:38.673584  171994 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:38.673600: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_0_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673615: W external/xla/xla/tsl/framework/bfc_allocator.cc:501] Allocator (GPU_3_bfc) ran out of memory trying to allocate 64.00GiB (rounded to 68719476992)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+2026-01-29 10:20:38.673644: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+2026-01-29 10:20:38.673658: W external/xla/xla/tsl/framework/bfc_allocator.cc:512] ***************************_________________________________________________________________________
+E0129 10:20:38.673651  171982 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+E0129 10:20:38.673664  171991 pjrt_stream_executor_client.cc:2916] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes. [tf-allocator-allocation-error='']
+2026-01-29 10:20:38,684 - __main__ - ERROR - Error during bandwidth test, check NCCL/NVLink/InfiniBand status.
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/data/home/johnson/benchmark/physical-intelligence-run-complete.py", line 87, in estimate_all_reduce_bandwidth
+    actual_sample = float(check_result[0, 0])
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/array.py", line 382, in __getitem__
+    return indexing.rewriting_take(self, idx)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/numpy/indexing.py", line 653, in rewriting_take
+    return internal_gather(arr, dynamic_idx)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/numpy/indexing.py", line 684, in _gather
+    y = lax.gather(
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/lax/slicing.py", line 424, in gather
+    return gather_p.bind(
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 536, in bind
+    return self._true_bind(*args, **params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 552, in _true_bind
+    return self.bind_with_trace(prev_trace, args, params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 562, in bind_with_trace
+    return trace.process_primitive(self, args, params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/core.py", line 1066, in process_primitive
+    return primitive.impl(*args, **params)
+  File "/data/home/johnson/benchmark/jax-env/lib/python3.10/site-packages/jax/_src/dispatch.py", line 91, in apply_primitive
+    outs = fun(*args)
+jaxlib._jax.XlaRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 68719476992 bytes.: while running replica 0 and partition 0 of a replicated computation (other replicas may have failed as well).
+2026-01-29 10:20:38,684 - __main__ - ERROR - Benchmark failed for buffer size 8.0 GB
+2026-01-29 10:20:38,684 - __main__ - INFO - ----------------------------------------------------------------------
+2026-01-29 10:20:38,684 - __main__ - INFO - 
+Benchmark completed!
