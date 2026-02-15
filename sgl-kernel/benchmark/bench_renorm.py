@@ -109,7 +109,7 @@ def torch_top_k_mask_logits(logits, top_k):
 
 
 def calculate_diff_top_k_renorm(batch_size, vocab_size, k):
-    """Compare Torch reference and SGLang kernel for top-k renorm correctness."""
+    """Compare Torch reference, sgl_kernel (compiled), and FlashInfer (JIT) for top-k renorm correctness."""
     torch.manual_seed(42)
     device = torch.device("cuda")
 
@@ -119,13 +119,15 @@ def calculate_diff_top_k_renorm(batch_size, vocab_size, k):
     top_k_tensor = torch.full((batch_size,), k, device=device, dtype=torch.int32)
 
     torch_output = torch_top_k_renorm_probs(probs, top_k_tensor)
-    sglang_output = sgl_kernel.top_k_renorm_prob(probs, top_k_tensor)
+    sglang_compiled_output = sgl_kernel.top_k_renorm_probs_compiled(probs, top_k_tensor)
+    sglang_jit_output = sgl_kernel.top_k_renorm_prob(probs, top_k_tensor)
 
-    torch.testing.assert_close(torch_output, sglang_output, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(torch_output, sglang_compiled_output, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(torch_output, sglang_jit_output, rtol=1e-3, atol=1e-3)
 
 
 def calculate_diff_top_p_renorm(batch_size, vocab_size, p):
-    """Compare Torch reference and SGLang kernel for top-p renorm correctness."""
+    """Compare Torch reference, sgl_kernel (compiled), and FlashInfer (JIT) for top-p renorm correctness."""
     torch.manual_seed(42)
     device = torch.device("cuda")
 
@@ -135,13 +137,15 @@ def calculate_diff_top_p_renorm(batch_size, vocab_size, p):
     top_p_tensor = torch.full((batch_size,), p, device=device, dtype=torch.float32)
 
     torch_output = torch_top_p_renorm_probs(probs, top_p_tensor)
-    sglang_output = sgl_kernel.top_p_renorm_prob(probs, top_p_tensor)
+    sglang_compiled_output = sgl_kernel.top_p_renorm_probs_compiled(probs, top_p_tensor)
+    sglang_jit_output = sgl_kernel.top_p_renorm_prob(probs, top_p_tensor)
 
-    torch.testing.assert_close(torch_output, sglang_output, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(torch_output, sglang_compiled_output, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(torch_output, sglang_jit_output, rtol=1e-3, atol=1e-3)
 
 
 def calculate_diff_top_k_mask(batch_size, vocab_size, k):
-    """Compare Torch reference and SGLang kernel for top-k mask correctness."""
+    """Compare Torch reference, sgl_kernel (compiled), and FlashInfer (JIT) for top-k mask correctness."""
     torch.manual_seed(42)
     device = torch.device("cuda")
 
@@ -149,9 +153,11 @@ def calculate_diff_top_k_mask(batch_size, vocab_size, k):
     top_k_tensor = torch.full((batch_size,), k, device=device, dtype=torch.int32)
 
     torch_output = torch_top_k_mask_logits(logits, top_k_tensor)
-    sglang_output = sgl_kernel.top_k_mask_logits(logits, top_k_tensor)
+    sglang_compiled_output = sgl_kernel.top_k_mask_logits_compiled(logits, top_k_tensor)
+    sglang_jit_output = sgl_kernel.top_k_mask_logits(logits, top_k_tensor)
 
-    torch.testing.assert_close(torch_output, sglang_output, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(torch_output, sglang_compiled_output, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(torch_output, sglang_jit_output, rtol=1e-3, atol=1e-3)
 
 
 # Parameter space - simplified for CI
@@ -175,9 +181,9 @@ configs_p = list(itertools.product(batch_size_range, vocab_size_range, p_range))
         x_names=["batch_size", "vocab_size", "k"],
         x_vals=configs_k,
         line_arg="provider",
-        line_vals=["torch", "sglang"],
-        line_names=["Torch Reference", "SGL Kernel (FlashInfer)"],
-        styles=[("red", "-"), ("green", "-")],
+        line_vals=["torch", "sgl_compiled", "sgl_jit"],
+        line_names=["Torch Reference", "SGL Kernel (Compiled)", "SGL Kernel (JIT)"],
+        styles=[("red", "-"), ("green", "-"), ("blue", "-")],
         ylabel="us",
         plot_name="top-k-renorm-probs-performance",
         args={},
@@ -197,7 +203,9 @@ def benchmark_top_k_renorm(batch_size, vocab_size, k, provider):
 
     if provider == "torch":
         fn = lambda: torch_top_k_renorm_probs(probs.clone(), top_k_tensor)
-    elif provider == "sglang":
+    elif provider == "sgl_compiled":
+        fn = lambda: sgl_kernel.top_k_renorm_probs_compiled(probs.clone(), top_k_tensor)
+    elif provider == "sgl_jit":
         fn = lambda: sgl_kernel.top_k_renorm_prob(probs.clone(), top_k_tensor)
 
     ms, min_ms, max_ms = triton.testing.do_bench(fn, quantiles=[0.5, 0.2, 0.8])
@@ -209,9 +217,9 @@ def benchmark_top_k_renorm(batch_size, vocab_size, k, provider):
         x_names=["batch_size", "vocab_size", "p"],
         x_vals=configs_p,
         line_arg="provider",
-        line_vals=["torch", "sglang"],
-        line_names=["Torch Reference", "SGL Kernel (FlashInfer)"],
-        styles=[("red", "-"), ("blue", "-")],
+        line_vals=["torch", "sgl_compiled", "sgl_jit"],
+        line_names=["Torch Reference", "SGL Kernel (Compiled)", "SGL Kernel (JIT)"],
+        styles=[("red", "-"), ("green", "-"), ("blue", "-")],
         ylabel="us",
         plot_name="top-p-renorm-probs-performance",
         args={},
@@ -227,7 +235,9 @@ def benchmark_top_p_renorm(batch_size, vocab_size, p, provider):
 
     if provider == "torch":
         fn = lambda: torch_top_p_renorm_probs(probs.clone(), top_p_tensor)
-    elif provider == "sglang":
+    elif provider == "sgl_compiled":
+        fn = lambda: sgl_kernel.top_p_renorm_probs_compiled(probs.clone(), top_p_tensor)
+    elif provider == "sgl_jit":
         fn = lambda: sgl_kernel.top_p_renorm_prob(probs.clone(), top_p_tensor)
 
     ms, min_ms, max_ms = triton.testing.do_bench(fn, quantiles=[0.5, 0.2, 0.8])
@@ -239,9 +249,9 @@ def benchmark_top_p_renorm(batch_size, vocab_size, p, provider):
         x_names=["batch_size", "vocab_size", "k"],
         x_vals=configs_k,
         line_arg="provider",
-        line_vals=["torch", "sglang"],
-        line_names=["Torch Reference", "SGL Kernel (FlashInfer)"],
-        styles=[("red", "-"), ("orange", "-")],
+        line_vals=["torch", "sgl_compiled", "sgl_jit"],
+        line_names=["Torch Reference", "SGL Kernel (Compiled)", "SGL Kernel (JIT)"],
+        styles=[("red", "-"), ("green", "-"), ("orange", "-")],
         ylabel="us",
         plot_name="top-k-mask-logits-performance",
         args={},
@@ -260,7 +270,9 @@ def benchmark_top_k_mask(batch_size, vocab_size, k, provider):
 
     if provider == "torch":
         fn = lambda: torch_top_k_mask_logits(logits.clone(), top_k_tensor)
-    elif provider == "sglang":
+    elif provider == "sgl_compiled":
+        fn = lambda: sgl_kernel.top_k_mask_logits_compiled(logits.clone(), top_k_tensor)
+    elif provider == "sgl_jit":
         fn = lambda: sgl_kernel.top_k_mask_logits(logits.clone(), top_k_tensor)
 
     ms, min_ms, max_ms = triton.testing.do_bench(fn, quantiles=[0.5, 0.2, 0.8])
