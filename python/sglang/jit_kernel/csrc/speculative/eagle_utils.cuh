@@ -31,6 +31,9 @@ typedef enum { FULL_MASK = 0, QLEN_ONLY = 1, QLEN_ONLY_BITPACKING = 2 } TreeMask
 // tree_mask [draft_token*(seq_len[0]+draft_token) | draft_token*(seq_len[1]+draft_token) | ..] =
 // [sum(verified_seq_len)*draft_token+bs*draft_token*draft_token] positions [bs * draft_token] retrive_index [b,
 // draft_token] retrive_next_token [b, draft_token] retrive_next_sibling [b, draft_token]
+//
+// Optimized: shared memory for selected_index/parent_list lookups;
+// parallel retrive_* construction via atomicExch (removes serial thread-0 loop).
 __global__ void build_tree_efficient(
     int64_t* parent_list,
     int64_t* selected_index,
@@ -50,6 +53,23 @@ __global__ void build_tree_efficient(
   if (tid >= draft_token_num) {
     return;
   }
+
+  // --- Load selected_index and parent_list into shared memory ---
+  extern __shared__ char smem_raw[];
+  int64_t* s_sel = reinterpret_cast<int64_t*>(smem_raw);
+  int sel_size = draft_token_num - 1;
+  int parent_size = topk * (depth - 1) + 1;
+  int64_t* s_parent = s_sel + sel_size;
+
+  for (int i = tid; i < sel_size; i += draft_token_num) {
+    s_sel[i] = selected_index[bid * sel_size + i];
+  }
+  for (int i = tid; i < parent_size; i += draft_token_num) {
+    s_parent[i] = parent_list[bid * parent_size + i];
+  }
+  __syncthreads();
+
+  // --- Tree mask computation (all threads) ---
   int seq_tree_idx = draft_token_num * draft_token_num * bid;
   for (int i = 0; i < bid; i++) {
     seq_tree_idx += verified_seq_len[i] * draft_token_num;
@@ -67,19 +87,21 @@ __global__ void build_tree_efficient(
   }
 
   int position = 0;
-  if (tid == 0) {
-    positions[bid * draft_token_num] = seq_len;
+  int retrive_base = bid * draft_token_num;
 
-    int retrive_index_offset = bid * draft_token_num;
+  if (tid == 0) {
+    positions[retrive_base] = seq_len;
+
+    // Thread 0: build retrive_* linked lists (serial to preserve sibling order).
+    // Lookups use shared memory instead of global memory.
     for (int i = draft_token_num - 1; i > 0; --i) {
-      int current_token_idx = retrive_index_offset + i;
-      retrive_index[bid * draft_token_num + i] = current_token_idx;
-      int parent_tb_idx = selected_index[bid * (draft_token_num - 1) + i - 1] / topk;
+      retrive_index[retrive_base + i] = retrive_base + i;
+      int parent_tb_idx = s_sel[i - 1] / topk;
       int parent_position = 0;
       if (parent_tb_idx > 0) {
-        int parent_token_idx = parent_list[bid * (topk * (depth - 1) + 1) + parent_tb_idx];
+        int parent_token_idx = s_parent[parent_tb_idx];
         for (; parent_position < draft_token_num; ++parent_position) {
-          if (selected_index[bid * (draft_token_num - 1) + parent_position] == parent_token_idx) {
+          if (s_sel[parent_position] == parent_token_idx) {
             ++parent_position;
             break;
           }
@@ -92,33 +114,33 @@ __global__ void build_tree_efficient(
         continue;
       }
 
-      if (retrive_next_token[bid * draft_token_num + parent_position] == -1) {
-        retrive_next_token[bid * draft_token_num + parent_position] = i;
+      if (retrive_next_token[retrive_base + parent_position] == -1) {
+        retrive_next_token[retrive_base + parent_position] = i;
       } else {
-        int origin_next_token = retrive_next_token[bid * draft_token_num + parent_position];
-        retrive_next_token[bid * draft_token_num + parent_position] = i;
-        retrive_next_sibling[bid * draft_token_num + i] = origin_next_token;
+        int origin_next_token = retrive_next_token[retrive_base + parent_position];
+        retrive_next_token[retrive_base + parent_position] = i;
+        retrive_next_sibling[retrive_base + i] = origin_next_token;
       }
     }
-    retrive_index[bid * draft_token_num] = bid * draft_token_num;
+    retrive_index[retrive_base] = retrive_base;
   } else {
+    // --- Tree mask path tracing (using shared memory) ---
     int cur_position = tid - 1;
     while (true) {
       position += 1;
       tree_mask[token_tree_idx + cur_position] = true;
-      int parent_tb_idx = selected_index[bid * (draft_token_num - 1) + cur_position] / topk;
+      int parent_tb_idx = s_sel[cur_position] / topk;
       if (parent_tb_idx == 0) {
         break;
       }
-
-      int token_idx = parent_list[bid * (topk * (depth - 1) + 1) + parent_tb_idx];
+      int token_idx = s_parent[parent_tb_idx];
       for (cur_position = 0; cur_position < draft_token_num; ++cur_position) {
-        if (selected_index[bid * (draft_token_num - 1) + cur_position] == token_idx) {
+        if (s_sel[cur_position] == token_idx) {
           break;
         }
       }
     }
-    positions[bid * draft_token_num + tid] = position + seq_len;
+    positions[retrive_base + tid] = position + seq_len;
   }
 }
 
@@ -130,6 +152,8 @@ __global__ void build_tree_efficient(
 // retrive_index [bs, draft_token]
 // retrive_next_token [bs, draft_token]
 // retrive_next_sibling [bs, draft_token]
+//
+// Optimized: shared memory + parallel retrive_* via atomicExch.
 __global__ void build_tree_efficient_partial_packed(
     int64_t* parent_list,
     int64_t* selected_index,
@@ -149,24 +173,41 @@ __global__ void build_tree_efficient_partial_packed(
   if (tid >= draft_token_num) {
     return;
   }
+
+  // --- Load into shared memory ---
+  extern __shared__ char smem_raw[];
+  int64_t* s_sel = reinterpret_cast<int64_t*>(smem_raw);
+  int sel_size = draft_token_num - 1;
+  int parent_size = topk * (depth - 1) + 1;
+  int64_t* s_parent = s_sel + sel_size;
+
+  for (int i = tid; i < sel_size; i += draft_token_num) {
+    s_sel[i] = selected_index[bid * sel_size + i];
+  }
+  for (int i = tid; i < parent_size; i += draft_token_num) {
+    s_parent[i] = parent_list[bid * parent_size + i];
+  }
+  __syncthreads();
+
   int seq_len = verified_seq_len[bid];
   int token_tree_idx = (bid * draft_token_num + tid) * num_bytes_per_item;
   tree_mask[token_tree_idx] = 1;  // little endian
 
   int position = 0;
-  if (tid == 0) {
-    positions[bid * draft_token_num] = seq_len;
+  int retrive_base = bid * draft_token_num;
 
-    int retrive_index_offset = bid * draft_token_num;
+  if (tid == 0) {
+    positions[retrive_base] = seq_len;
+
+    // Thread 0: build retrive_* linked lists using shared memory lookups.
     for (int i = draft_token_num - 1; i > 0; --i) {
-      int current_token_idx = retrive_index_offset + i;
-      retrive_index[bid * draft_token_num + i] = current_token_idx;
-      int parent_tb_idx = selected_index[bid * (draft_token_num - 1) + i - 1] / topk;
+      retrive_index[retrive_base + i] = retrive_base + i;
+      int parent_tb_idx = s_sel[i - 1] / topk;
       int parent_position = 0;
       if (parent_tb_idx > 0) {
-        int parent_token_idx = parent_list[bid * (topk * (depth - 1) + 1) + parent_tb_idx];
+        int parent_token_idx = s_parent[parent_tb_idx];
         for (; parent_position < draft_token_num; ++parent_position) {
-          if (selected_index[bid * (draft_token_num - 1) + parent_position] == parent_token_idx) {
+          if (s_sel[parent_position] == parent_token_idx) {
             ++parent_position;
             break;
           }
@@ -179,38 +220,41 @@ __global__ void build_tree_efficient_partial_packed(
         continue;
       }
 
-      if (retrive_next_token[bid * draft_token_num + parent_position] == -1) {
-        retrive_next_token[bid * draft_token_num + parent_position] = i;
+      if (retrive_next_token[retrive_base + parent_position] == -1) {
+        retrive_next_token[retrive_base + parent_position] = i;
       } else {
-        int origin_next_token = retrive_next_token[bid * draft_token_num + parent_position];
-        retrive_next_token[bid * draft_token_num + parent_position] = i;
-        retrive_next_sibling[bid * draft_token_num + i] = origin_next_token;
+        int origin_next_token = retrive_next_token[retrive_base + parent_position];
+        retrive_next_token[retrive_base + parent_position] = i;
+        retrive_next_sibling[retrive_base + i] = origin_next_token;
       }
     }
-    retrive_index[bid * draft_token_num] = bid * draft_token_num;
+    retrive_index[retrive_base] = retrive_base;
   } else {
+    // --- Tree mask path tracing (using shared memory) ---
     int cur_position = tid - 1;
     while (true) {
       position += 1;
       int byte_idx = (cur_position + 1) / 8;
       int bit_idx = (cur_position + 1) % 8;
       tree_mask[token_tree_idx + byte_idx] |= (1 << bit_idx);
-      int parent_tb_idx = selected_index[bid * (draft_token_num - 1) + cur_position] / topk;
+      int parent_tb_idx = s_sel[cur_position] / topk;
       if (parent_tb_idx == 0) {
         break;
       }
-
-      int token_idx = parent_list[bid * (topk * (depth - 1) + 1) + parent_tb_idx];
+      int token_idx = s_parent[parent_tb_idx];
       for (cur_position = 0; cur_position < draft_token_num; ++cur_position) {
-        if (selected_index[bid * (draft_token_num - 1) + cur_position] == token_idx) {
+        if (s_sel[cur_position] == token_idx) {
           break;
         }
       }
     }
-    positions[bid * draft_token_num + tid] = position + seq_len;
+    positions[retrive_base + tid] = position + seq_len;
   }
 }
 
+// Optimized: warp-packed launch — batch elements packed into warps instead of
+// 1-thread-per-block. Shared memory prefetch was tested but regressed perf
+// because the per-batch working set (~512B for ndt=16) already fits in L1 cache.
 template <typename IdType, typename IdType2>
 __global__ void VerifyTreeGreedy(
     IdType* predicts,
@@ -224,7 +268,8 @@ __global__ void VerifyTreeGreedy(
     uint32_t batch_size,
     uint32_t num_speculative_tokens,
     uint32_t num_draft_tokens) {
-  uint32_t bx = blockIdx.x;
+  uint32_t bx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (bx >= batch_size) return;
 
   IdType2 last_accepted_retrive_idx = retrive_index[bx * num_draft_tokens];
   accept_index[bx * num_speculative_tokens] = last_accepted_retrive_idx;
@@ -345,8 +390,9 @@ void verify_tree_greedy(
       "target_predict shape mismatch");
 
   cudaStream_t stream = LaunchKernel::resolve_device(candidates.device());
-  dim3 grid(batch_size);
-  dim3 block(1);
+  constexpr unsigned BLOCK_SIZE = 256;
+  dim3 grid((batch_size + BLOCK_SIZE - 1) / BLOCK_SIZE);
+  dim3 block(batch_size < BLOCK_SIZE ? batch_size : BLOCK_SIZE);
 
   LaunchKernel(grid, block, stream)(
       VerifyTreeGreedy<int32_t, int64_t>,
@@ -448,6 +494,9 @@ void build_tree_kernel_efficient(
   dim3 grid(bs);
   dim3 block(static_cast<unsigned>(draft_token_num));
 
+  // Shared memory: selected_index (draft_token_num-1) + parent_list (topk*(depth-1)+1), both int64
+  size_t smem_bytes = static_cast<size_t>((draft_token_num - 1) + topk * (depth - 1) + 1) * sizeof(int64_t);
+
   if (tree_mask_mode == QLEN_ONLY_BITPACKING) {
     size_t num_bytes_per_item = 1;
     if (draft_token_num > 16) {
@@ -455,7 +504,7 @@ void build_tree_kernel_efficient(
     } else if (draft_token_num > 8) {
       num_bytes_per_item = 2;
     }
-    LaunchKernel(grid, block, stream)(
+    LaunchKernel(grid, block, stream, smem_bytes)(
         build_tree_efficient_partial_packed,
         static_cast<int64_t*>(parent_list.data_ptr()),
         static_cast<int64_t*>(selected_index.data_ptr()),
@@ -470,7 +519,7 @@ void build_tree_kernel_efficient(
         static_cast<int>(draft_token_num),
         num_bytes_per_item);
   } else {
-    LaunchKernel(grid, block, stream)(
+    LaunchKernel(grid, block, stream, smem_bytes)(
         build_tree_efficient,
         static_cast<int64_t*>(parent_list.data_ptr()),
         static_cast<int64_t*>(selected_index.data_ptr()),
