@@ -310,6 +310,7 @@ def _build_nvfp4_config_from_safetensors_files(
                 "group_size": group_size,
                 "ignore": exclude_modules,
                 "checkpoint_uses_packed_qkv": checkpoint_uses_packed_qkv,
+                "swap_weight_nibbles": False,  # HF BFL checkpoints store weights in standard FP4 packing (low nibble = even col); no swap needed
             }
         )
         logger.info(
