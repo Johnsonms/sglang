@@ -101,9 +101,40 @@ These are also FP4-quantized in the NVFP4 checkpoint.
 
 #### Sequence Lengths
 
-For a 512×512 image:
-- `S_img = (512/8) × (512/8) × 4 = 4096` image latent tokens
-- `S_txt` ≈ varies by prompt length, typically 64–512
+图像 tokenization 分两步完成：
+
+**第一步：VAE 空间压缩（像素空间 → latent 空间）**
+
+VAE encoder 是带有残差块和 attention 的卷积网络，做的是**连续的空间下采样**，不是硬切 patch：
+
+```
+512×512×3 (RGB) ──► VAE Encoder ──► 64×64×32 (latent)
+```
+
+每个 latent 位置对应原图 8×8 像素的感受野，但 VAE 编码的是学习到的语义特征，而不是像素均值。
+
+**第二步：2×2 Patchify（latent 空间 → transformer token）**
+
+在进入 transformer 之前，对 `64×64×32` 的 latent 做空间折叠——每个 2×2 的 spatial block 拼到 channel 维度：
+
+```
+64×64×32 ──► reshape ──► 32×32×128
+                    (2×2 block → 4 个位置 × 32 ch = 128 ch/token)
+```
+
+得到 `32×32 = 1024` 个 token，每个 token 覆盖原图 **16×16 像素**（VAE 8× × patchify 2× = 16×）。
+
+**512×512 汇总：**
+- `S_img = (512/8/2) × (512/8/2) = 32 × 32 = 1024` image latent tokens
+- 每个 token ↔ 原图 16×16 像素，128 维 latent 向量
+- `S_txt` ≤ 512（T5 encoder 上限），实际取决于 prompt 长度，通常 64–512
+
+Token counts by resolution (after VAE 8× + 2×2 pack = 16× effective):
+| Resolution | S_img |
+|------------|-------|
+| 512×512    | 1024  |
+| 768×768    | 2304  |
+| 1024×1024  | 4096  |
 
 The transformer operates at `D=6144` (hidden dim) for FLUX.2.
 
@@ -358,34 +389,76 @@ The question was: **what nibble convention does the BFL checkpoint actually use?
 
 ### 4.2 Technical Explanation: BFL Nibble Convention
 
-BFL NVFP4 checkpoints are produced by NVIDIA ModelOpt's quantizer. The ModelOpt quantizer stores packed FP4 as:
+#### Nibble Packing 基础
+
+FP4 每个值 4 bits，一个 byte（8 bits）恰好打包两个。对于权重矩阵某一行，相邻两列配对：
+
+```
+col 0, col 1 → byte[0]
+col 2, col 3 → byte[1]
+col 4, col 5 → byte[2]  ...
+```
+
+**CUTLASS/cuDNN kernel 期望的格式：**
 
 ```
 byte[i] = fp4_even_col | (fp4_odd_col << 4)
+         ↑ 低 4 bits（lo nibble）  ↑ 高 4 bits（hi nibble）
 ```
 
-Wait — this is the standard convention. But ModelOpt's CUTLASS kernel *reads* it expecting:
+具体示例，假设 col 0 = 1.0（FP4 编码 `0x4`），col 1 = 2.0（FP4 编码 `0x6`）：
 
 ```
-byte[i] = fp4_col_0 | (fp4_col_1 << 4)
+byte[0] = 0x4 | (0x6 << 4) = 0x64 = 0b 0110 0100
+                                           ^^^^      ← 高 nibble: col1 = 2.0
+                                               ^^^^  ← 低 nibble: col0 = 1.0
 ```
 
-where col_0 is the first column of each pair (even), col_1 is the second (odd). So far, no swap needed.
+Kernel 读取：
+```python
+fp4_col0 = byte & 0x0F  # → 0x4 = 1.0  ✓
+fp4_col1 = byte >> 4    # → 0x6 = 2.0  ✓
+```
 
-**However**, the BFL checkpoint format reverses this:
+#### BFL Checkpoint 的格式（相反）
+
+BFL NVFP4 checkpoints 是 NVIDIA ModelOpt quantizer 生成的，打包约定与上面相反——偶数列在高 nibble，奇数列在低 nibble：
 
 ```
 BFL byte[i] = fp4_odd_col | (fp4_even_col << 4)
-             ↑ lo nibble    ↑ hi nibble
+             ↑ 低 4 bits      ↑ 高 4 bits
 ```
 
-This means when CUTLASS reads `fp4_lo = byte & 0x0F`, it gets the value for the *odd* column instead of the expected even column. Every pair of adjacent weight values is swapped.
+同样的 col0=1.0, col1=2.0，BFL 打包：
 
-The fix — apply byte-level nibble swap during weight loading:
+```
+byte[0] = 0x6 | (0x4 << 4) = 0x46 = 0b 0100 0110
+                                           ^^^^      ← 高 nibble: col0 = 1.0（存在高位）
+                                               ^^^^  ← 低 nibble: col1 = 2.0（存在低位）
+```
+
+Kernel 拿到 `0x46`，按 CUTLASS 约定解读：
+```python
+fp4_col0 = 0x46 & 0x0F  # → 0x6 = 2.0  ✗（应该是 1.0）
+fp4_col1 = 0x46 >> 4    # → 0x4 = 1.0  ✗（应该是 2.0）
+```
+
+每对相邻列的权重值都互换了，整个权重矩阵的列顺序全乱 → cos_sim ≈ 0。
+
+#### Nibble Swap 修复
+
 ```python
 w_swapped = ((w_packed >> 4) | (w_packed << 4)).to(torch.uint8)
-# Equivalent to: swap hi and lo nibbles of every byte
 ```
+
+对 `0x46` 做 swap：
+```
+0x46 >> 4 → 0x04
+0x46 << 4 → 0x60  （uint8 自动截断高位）
+OR        → 0x64  ✓ 恢复成 CUTLASS/cuDNN 期望的格式
+```
+
+把每个 byte 的高低 nibble 对调，BFL 格式就与 kernel 期望对齐。
 
 ### 4.3 The Fix
 
