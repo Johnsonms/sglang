@@ -403,7 +403,13 @@ def _build_nvfp4_config_from_safetensors_files(
         if mapping_fn is not None:
             mapped, _, _ = mapping_fn(raw_weight_name)
             if mapped != raw_weight_name:
-                exclude_modules.append(module_bfl)
+                # exclude_modules holds module names (no ".weight" suffix) under
+                # the mapped (SGLang-side) layout — the load-time NVFP4 quant
+                # config is keyed by runtime module names.
+                mapped_module = (
+                    mapped[: -len(".weight")] if mapped.endswith(".weight") else mapped
+                )
+                exclude_modules.append(mapped_module)
                 continue
 
         if reverse_mapping_fn is not None:

@@ -72,23 +72,37 @@ def _build_supplemental_safetensors_dir(mixed_file: str) -> str | None:
     h = hashlib.sha256(mixed_file.encode()).hexdigest()[:16]
     supp_dir = os.path.join(tempfile.gettempdir(), f"sglang_nvfp4_supp_{h}")
 
-    mixed_link = os.path.join(supp_dir, mixed_name)
-    supp_path = os.path.join(supp_dir, "supplemental.safetensors")
-
-    if os.path.isfile(supp_path) and os.path.exists(mixed_link):
-        return supp_dir
-
     with safe_open(mixed_file, framework="pt", device="cpu") as f:
         mixed_keys = set(f.keys())
 
-    extra_tensors = {}
     with safe_open(non_mixed_path, framework="pt", device="cpu") as f:
-        for key in f.keys():
-            if key not in mixed_keys:
-                extra_tensors[key] = f.get_tensor(key)
+        non_mixed_keys = set(f.keys())
 
-    if not extra_tensors:
+    expected_extra_keys = non_mixed_keys - mixed_keys
+    if not expected_extra_keys:
         return None
+
+    mixed_link = os.path.join(supp_dir, mixed_name)
+    # Name must match the loader's *-mixed.safetensors filter
+    # (_prefer_mixed_safetensors_files in transformer_load_utils.py); otherwise
+    # the supplemental file is silently dropped as a "non-mixed sibling".
+    supp_path = os.path.join(supp_dir, "supplemental-mixed.safetensors")
+
+    if os.path.isfile(supp_path) and os.path.exists(mixed_link):
+        with safe_open(supp_path, framework="pt", device="cpu") as f:
+            supplemental_keys = set(f.keys())
+        if supplemental_keys == expected_extra_keys:
+            return supp_dir
+        logger.warning(
+            "Rebuilding stale FLUX.2 NVFP4 supplemental cache at %s: expected %d "
+            "tensor(s), found %d",
+            supp_dir,
+            len(expected_extra_keys),
+            len(supplemental_keys),
+        )
+
+    with safe_open(non_mixed_path, framework="pt", device="cpu") as f:
+        extra_tensors = {key: f.get_tensor(key) for key in expected_extra_keys}
 
     os.makedirs(supp_dir, exist_ok=True)
 
