@@ -27,24 +27,33 @@
 10. [Two-Day Timeline](#10-two-day-timeline)
 11. [Debugging Principles](#11-debugging-principles)
 12. [Prevention and Future Guards](#12-prevention-and-future-guards)
+13. [Postscript: Root Cause 4 — Custom NVFP4 Loader Silently Falls Back to Native Diffusers BF16 (Rebase Regression)](#13-postscript-root-cause-4--custom-nvfp4-loader-silently-falls-back-to-native-diffusers-bf16-rebase-regression)
+   - 13.1 [Discovery Path](#131-discovery-path)
+   - 13.2 [Sub-Cause A: Mapped vs Raw Module Name in NVFP4 Exclude List](#132-sub-cause-a-mapped-vs-raw-module-name-in-nvfp4-exclude-list)
+   - 13.3 [Sub-Cause B: Supplemental Filename Filtered Out by Loader](#133-sub-cause-b-supplemental-filename-filtered-out-by-loader)
+   - 13.4 [Sub-Cause C: Stale Supplemental Cache Reused Without Validation](#134-sub-cause-c-stale-supplemental-cache-reused-without-validation)
+   - 13.5 [Dead Ends Along the RC4 Investigation](#135-dead-ends-along-the-rc4-investigation)
+   - 13.6 [Verification After All RC4 Sub-Fixes](#136-verification-after-all-rc4-sub-fixes)
+   - 13.7 [Why the Original 2-Day Investigation Did Not Catch This](#137-why-the-original-2-day-investigation-did-not-catch-this)
 
 ---
 
 ## 1. Executive Summary
 
-`FLUX.2-dev-NVFP4` generated pure-white images (mean pixel ≈252, std ≈2) on a B200 GPU while BF16 worked correctly. The investigation found **three independent root causes**, all of which had to be fixed together before correct image quality was restored:
+`FLUX.2-dev-NVFP4` generated pure-white images (mean pixel ≈252, std ≈2) on a B200 GPU while BF16 worked correctly. The original two-day investigation found **three independent root causes**, all of which had to be fixed together before correct image quality was restored. A subsequent rebase onto current `main` exposed a **fourth root cause** — a loader-path regression where the custom SGLang NVFP4 loader was silently falling back to native diffusers BF16, making the original three fixes dead code on the rebased branch. Restoring the custom loader required three small sub-fixes (RC4-A, B, C). All four root causes are now addressed:
 
 | # | Root Cause | Location | Impact |
 |---|-----------|----------|--------|
 | 1 | `swap_weight_nibbles=False` — BFL checkpoint nibble order is opposite to what mm_fp4 kernels expect | `quantization_utils.py` | GEMM outputs random noise (cos_sim≈0 vs BF16) |
 | 2 | Mixed checkpoint omits `input_scale` for 64 tensors in double-block attention/MLP layers | `flux_2_nvfp4.py` | Activation scaling defaults to 1.0 → wrong quantization range for those layers |
 | 3 | CUTLASS TMA blockwise scale permutation always applied, even for flashinfer/cuDNN backend which expects raw row-major scales | `modelopt_quant.py` | Scale values scrambled → GEMM #4 output 116σ outlier → cascade → all-white |
+| 4 | Custom NVFP4 loader silently falls back to native diffusers BF16 on current `main` (3 sub-causes) | `quantization_utils.py`, `flux_2_nvfp4.py` | RC1–RC3 fixes never run; transformer loaded as BF16 (~120 GB) instead of NVFP4 (~22.9 GB); end-to-end output is garbage on the wrong code path |
 
-After all three fixes:  
-- NVFP4: `mean=215.8, std=80.84`  
-- BF16:  `mean=215.9, std=82.58`  
+After all four root causes are fixed:
+- NVFP4 (this branch, current main): `mean=214.43, std=79.61`
+- BF16 (reference):                   `mean=215.9,  std=82.58`
 
-The images are visually and statistically indistinguishable.
+The images are visually and statistically indistinguishable. Loader logs confirm `Loaded transformer: Flux2Transformer2DModel (sgl-diffusion version). model size: 22.9 GB` with no fallback line and no `Found unloaded parameters in meta state dict` warning.
 
 ---
 
@@ -1179,6 +1188,473 @@ The value of `swap_weight_nibbles` must be explained with reference to a specifi
 ```
 
 If a future checkpoint uses a different convention, this comment should be updated and the verification test should be re-run.
+
+### Guard 6: Verify the Custom NVFP4 Code Path Actually Ran
+
+Image-pixel verification (`mean≈215, std≈80`) confirms GEMM-level correctness but does NOT distinguish "custom NVFP4 path produced the right image" from "silent fallback to native diffusers BF16 produced the right image." Loader-path drift on `main` (RC4) caused exactly this confusion.
+
+A cheap CI check after any NVFP4 verification run:
+
+```bash
+LOG=/tmp/nvfp4_verify.log
+
+# 1. Custom NVFP4 path actually ran
+grep -q "Loaded transformer: Flux2Transformer2DModel (sgl-diffusion version)" "$LOG" \
+  || { echo "FAIL: custom transformer loader did not run"; exit 1; }
+
+# 2. Loaded model size is in the NVFP4 range, not BF16
+grep "Loaded transformer.*model size" "$LOG" | awk '{print $NF, $(NF-1)}' \
+  | awk '$2=="GB" && ($1 > 30) { exit 1 }' \
+  || { echo "FAIL: model size > 30 GB suggests BF16 fallback"; exit 1; }
+
+# 3. No silent fallback fired
+grep -q "falling back to native version" "$LOG" \
+  && { echo "FAIL: ComponentLoader fell back to native diffusers"; exit 1; }
+
+# 4. No tensors silently dropped during load
+grep -q "Found unloaded parameters in meta state dict" "$LOG" \
+  && { echo "FAIL: meta state dict had unloaded parameters"; exit 1; }
+
+# 5. Both supplemental files reached the loader (when supplemental dir is in use)
+grep -q "Loading Flux2Transformer2DModel from 2 safetensors file(s)" "$LOG" \
+  || echo "WARN: only 1 safetensors file loaded; supplemental may have been filtered"
+```
+
+These five greps catch every RC4 sub-cause individually and require no GPU work — they're pure log inspection. Wire them into the same CI step that runs the end-to-end image generation, and any future loader-path regression on `main` becomes a hard failure instead of a silent BF16 substitution.
+
+---
+
+## 13. Postscript: Root Cause 4 — Custom NVFP4 Loader Silently Falls Back to Native Diffusers BF16 (Rebase Regression)
+
+### 13.1 Discovery Path
+
+Three days after the original investigation closed, the fix branch was rebased onto current `main` so it could be opened as a PR. The rebase itself was clean — no conflicts on the three NVFP4 fix files. The first sanity-check generation, however, produced obviously wrong output:
+
+```
+NVFP4 (rebased, all 3 fixes): mean=219.19, std=12.12
+BF16 reference:               mean=215.9,  std=82.58
+```
+
+Pixel mean was close to BF16 but **standard deviation collapsed from ~80 to ~12** — the rendered image was a near-uniform cream/beige smear with no structure. Critically, this was *not* the original "white image" symptom — std=12 is not std=2, and the image was *not* saturated to 255. The failure mode was different.
+
+The transformer-loader log explained why:
+
+```
+[ERROR] AssertionError: Failed to shard/load parameter proj_out.weight:
+        full_tensor.shape=(128, 6144), meta_sharded_param.shape=(128, 3072),
+        temp_param.shape=(128, 3072), param_cls=ModelWeightParameter
+[ERROR] Error while loading customized transformer, falling back to native version
+[INFO]  Loaded transformer: Flux2Transformer2DModel (native version).
+        model size: 120.04 GB, consumed GPU mem: 120.04 GB
+```
+
+Three observations from this log immediately reframed the problem:
+
+1. **The custom SGLang NVFP4 loader was failing**, not the kernel or the data. Failure was at *weight-load time* (shape assertion), well before any GEMM ran.
+2. **`ComponentLoader` was silently catching the exception and falling back to native diffusers**. The fallback path loads the model as plain BF16 from the diffusers `Flux2Transformer2DModel` class — which has no NVFP4-aware weight loader, no `swap_weight_nibbles`, no input_scale handling, no TMA-permute decision. **Every single fix from RC1, RC2, and RC3 was dead code on this path.**
+3. **`model size: 120.04 GB`** is the giveaway. The custom NVFP4 path produces a transformer that occupies ~22.9 GB on GPU. The native BF16 path, with FLUX.2-dev's full bf16 weights expanded, lands around 120 GB. The 5× ratio is exactly what we'd expect from `bfloat16 / nvfp4-packed`.
+
+The remaining work was to figure out why the custom loader was failing on `proj_out.weight` specifically — a shape mismatch of `(128, 6144)` (checkpoint) vs `(128, 3072)` (meta). The factor-of-two ratio was suspiciously aligned with the FP4 packing factor: NVFP4 stores two FP4 values per byte, so a logical `[N, K]` weight is packed as `[N, K/2]` on disk. Either the checkpoint shipped this layer **unpacked** (so it's actually BF16) and the meta wanted it **packed** (NVFP4), or vice versa. That mismatch is the core RC4-A.
+
+Three sub-causes had to be fixed for the custom path to succeed end-to-end:
+
+- **RC4-A:** `proj_out` was incorrectly tagged as NVFP4 when it should stay BF16. The `exclude_modules` list was being built with the wrong key namespace.
+- **RC4-B:** Even after RC4-A, an `Found unloaded parameters in meta state dict` warning appeared for the same 16 `txt_mlp.*.input_scale` tensors that RC2 was supposed to backfill. The supplemental file was being generated correctly but silently dropped by the loader's `*-mixed.safetensors` filename filter.
+- **RC4-C:** A stale `/tmp` cache from earlier debugging runs was persisting across invocations even when the supplemental's contents no longer matched the current expected-extras set, masking the test signal during iteration.
+
+---
+
+### 13.2 Sub-Cause A: Mapped vs Raw Module Name in NVFP4 Exclude List
+
+#### 13.2.1 Symptom
+
+Custom NVFP4 loader fails at meta-load time with:
+
+```
+AssertionError: Failed to shard/load parameter proj_out.weight:
+                full_tensor.shape=(128, 6144), meta_sharded_param.shape=(128, 3072)
+```
+
+The `(128, 6144)` shape is the BF16 storage of `proj_out`; the `(128, 3072)` is what the meta layout expects when `proj_out` is treated as NVFP4 (FP4 is packed 2-per-byte → K halved).
+
+#### 13.2.2 Investigation
+
+`_build_nvfp4_config_from_safetensors_files()` in `quantization_utils.py` builds the NVFP4 quant config from safetensors metadata when the checkpoint doesn't ship a `quantization_config` in its diffusers config. The function walks BFL-side metadata to compute which modules stay BF16 (the `exclude_modules` list), e.g. `final_layer.linear` (BFL's name for the last projection layer).
+
+The pre-existing code on `main` looked like:
+
+```python
+for module_bfl in exclude_bfl_modules:
+    raw_weight_name = f"{module_bfl}.weight"
+    if mapping_fn is not None:
+        mapped, _, _ = mapping_fn(raw_weight_name)
+        if mapped != raw_weight_name:
+            exclude_modules.append(module_bfl)   # ← BUG: appends BFL name, not mapped name
+            continue
+    # ... fallback paths
+```
+
+The `exclude_modules` list is later passed into `ModelOptFp4Config` and used by the runtime quant method to decide which submodules of the SGLang `Flux2Transformer2DModel` should remain BF16. **But the runtime quant config is keyed by SGLang-side (mapped) module names, not BFL-side raw names.**
+
+For FLUX.2:
+
+| BFL raw name | Mapped (SGLang) name |
+|--------------|----------------------|
+| `final_layer.linear` | `proj_out` |
+| `double_blocks.X.img_mlp.0` | `transformer_blocks.X.ff.linear_in` |
+| `double_blocks.X.txt_mlp.2` | `transformer_blocks.X.ff_context.linear_out` |
+
+By appending `final_layer.linear` instead of `proj_out`, the BF16 exclusion never took effect. `proj_out` continued to be tagged as NVFP4. The loader then tried to interpret the BF16 checkpoint bytes for `proj_out.weight` as NVFP4-packed bytes and tripped the meta-shape assertion.
+
+#### 13.2.3 Why the Factor of Two
+
+NVFP4 weight packing:
+- Logical shape: `[out_features, in_features]` (the BF16 weight matrix shape)
+- Stored on disk: `[out_features, in_features // 2]` (2 FP4 values per byte)
+
+`proj_out` has logical shape `[128, 6144]`. Stored as BF16 → `[128, 6144]`, two bytes per element. Stored as NVFP4 → `[128, 3072]`, one byte per pair.
+
+When the custom loader tried to materialize `proj_out` as NVFP4, the meta tensor was allocated at `[128, 3072]` (the packed shape). The full BF16 tensor coming from the checkpoint was `[128, 6144]`. The shape assertion fired immediately.
+
+#### 13.2.4 The Fix
+
+```python
+for module_bfl in exclude_bfl_modules:
+    raw_weight_name = f"{module_bfl}.weight"
+    if mapping_fn is not None:
+        mapped, _, _ = mapping_fn(raw_weight_name)
+        if mapped != raw_weight_name:
+            # exclude_modules holds module names (no ".weight" suffix) under
+            # the mapped (SGLang-side) layout — the load-time NVFP4 quant
+            # config is keyed by runtime module names.
+            mapped_module = (
+                mapped[: -len(".weight")] if mapped.endswith(".weight") else mapped
+            )
+            exclude_modules.append(mapped_module)   # e.g. "proj_out"
+            continue
+```
+
+The `.weight` suffix is stripped because `exclude_modules` is a list of *module* names (no parameter suffix). `mapping_fn` returns the full mapped key including `.weight`, so we strip it before appending.
+
+#### 13.2.5 Proof
+
+A focused unit test (`test_quantization_utils.py:test_nvfp4_excludes_flux2_bf16_fallback_layers_after_name_mapping`) constructs a synthetic FLUX.2 NVFP4 checkpoint with `final_layer.linear.weight` in BF16, runs `build_nvfp4_config_from_safetensors_list()` with the FluxArchConfig name-mapping dict, and asserts that:
+
+```python
+self.assertIn("proj_out", quant_config.exclude_modules)
+self.assertNotIn("final_layer.linear", quant_config.exclude_modules)
+```
+
+After the fix, the test passes. End-to-end, the `proj_out.weight` shape assertion at meta-load time disappears, and the custom NVFP4 loader proceeds past it.
+
+---
+
+### 13.3 Sub-Cause B: Supplemental Filename Filtered Out by Loader
+
+#### 13.3.1 Symptom
+
+After RC4-A fixed the meta-load assertion, end-to-end generation reached the denoising loop but produced the same `mean≈219, std≈12` cream-smear as before — and the loader log emitted a new (or re-emitted) warning that had not been there during the original two-day investigation:
+
+```
+[WARNING] Found unloaded parameters in meta state dict: {
+  'transformer_blocks.0.ff_context.linear_in.input_scale',
+  'transformer_blocks.0.ff_context.linear_out.input_scale',
+  'transformer_blocks.1.ff_context.linear_in.input_scale',
+  ...
+  ... 16 tensors total, all transformer_blocks.{0..7}.ff_context.linear_{in,out}.input_scale
+}
+```
+
+These are *exactly* the 16 `txt_mlp.*.input_scale` tensors that RC2's `_build_supplemental_safetensors_dir()` was supposed to backfill — under the BFL→SGLang name mapping (`txt_mlp.0` → `ff_context.linear_in`, `txt_mlp.2` → `ff_context.linear_out`).
+
+#### 13.3.2 Investigation
+
+The supplemental file was being generated. Inspection of the temp dir confirmed it contained the expected 64 keys:
+
+```bash
+$ ls -la /tmp/sglang_nvfp4_supp_<hash>/
+flux2-dev-nvfp4-mixed.safetensors -> /home/.../models--black-forest-labs--FLUX.2-dev-NVFP4/.../flux2-dev-nvfp4-mixed.safetensors
+supplemental.safetensors                  ← 64 keys, all expected
+
+$ python -c "from safetensors import safe_open; \
+             print(len(list(safe_open('/tmp/sglang_nvfp4_supp_<hash>/supplemental.safetensors', \
+             framework='pt').keys())))"
+64
+```
+
+The keys included exactly the 16 `double_blocks.*.txt_mlp.*.input_scale` tensors that should map to the unloaded `transformer_blocks.*.ff_context.linear_*.input_scale` parameters.
+
+So the supplemental file existed, with the right contents, in the right directory. **Why wasn't it being loaded?**
+
+Closer inspection of the loader log revealed a line that had not been noticed during the original investigation:
+
+```
+[INFO] Using 1 mixed transformer safetensors file(s) and ignoring 1 sibling
+       non-mixed file(s):
+       ['/tmp/sglang_nvfp4_supp_<hash>/flux2-dev-nvfp4-mixed.safetensors']
+```
+
+The loader was picking up only the *symlinked* `flux2-dev-nvfp4-mixed.safetensors` and **silently dropping `supplemental.safetensors` as a "non-mixed sibling"**.
+
+#### 13.3.3 The Loader Filter
+
+`runtime/loader/transformer_load_utils.py` defines:
+
+```python
+_MIXED_SAFETENSORS_RE = re.compile(r".*-mixed(?:-\d+-of-\d+)?\.safetensors$")
+
+def _prefer_mixed_safetensors_files(safetensors_list: list[str]) -> list[str]:
+    """Prefer mixed-precision transformer exports over sibling full exports.
+
+    Some raw ModelOpt NVFP4 repos ship both `foo-mixed.safetensors` and
+    `foo.safetensors`. They are alternative full transformer exports, not
+    shards, so loading both trips duplicate tensor-name validation.
+    """
+    mixed_files = [
+        path for path in safetensors_list
+        if _MIXED_SAFETENSORS_RE.match(os.path.basename(path))
+    ]
+    if not mixed_files or len(mixed_files) == len(safetensors_list):
+        return safetensors_list
+    logger.info(
+        "Using %d mixed transformer safetensors file(s) and ignoring %d sibling "
+        "non-mixed file(s): %s",
+        len(mixed_files), len(safetensors_list) - len(mixed_files), mixed_files
+    )
+    return mixed_files
+```
+
+The filter is intended to prevent loading both `foo-mixed.safetensors` and `foo.safetensors` when a raw ModelOpt export ships both. Its regex accepts only filenames ending in `-mixed.safetensors` (or sharded `-mixed-<i>-of-<n>.safetensors`).
+
+The original RC2 fix named the supplemental file `supplemental.safetensors`. That name **does not match the regex**. So in the supp dir's two-file content (`flux2-dev-nvfp4-mixed.safetensors` symlink + `supplemental.safetensors`), the filter saw one match and one non-match — and silently dropped the non-match.
+
+This is a textbook case of an *invisible* interaction between two unrelated subsystems:
+- RC2's fix produced a deterministic temp dir with two files, designed to be loaded together.
+- The loader's filter (added independently for a different reason — duplicate-key avoidance) silently filters out anything not named `*-mixed.safetensors`.
+
+The two subsystems didn't share a contract, and there was no error or even warning when one stripped the other's output.
+
+#### 13.3.4 The Fix
+
+Rename the supplemental file so it passes the filter:
+
+```python
+mixed_link = os.path.join(supp_dir, mixed_name)
+# Name must match the loader's *-mixed.safetensors filter
+# (_prefer_mixed_safetensors_files in transformer_load_utils.py); otherwise
+# the supplemental file is silently dropped as a "non-mixed sibling".
+supp_path = os.path.join(supp_dir, "supplemental-mixed.safetensors")
+```
+
+The `-mixed.safetensors` suffix is the minimum change required for the regex to match. No filter logic was changed — the contract change is purely on the filename side.
+
+#### 13.3.5 Proof
+
+After RC4-A + RC4-B, with a fresh cache:
+
+```
+[INFO] Using mixed-precision NVFP4 weights: ...flux2-dev-nvfp4-mixed.safetensors
+[INFO] Supplemented mixed NVFP4 checkpoint with 64 missing tensor(s) from
+       flux2-dev-nvfp4.safetensors → /tmp/sglang_nvfp4_supp_<hash>
+[INFO] Loading Flux2Transformer2DModel from 2 safetensors file(s)
+        ↑ both files now loaded together
+```
+
+No more `Found unloaded parameters in meta state dict` warning. The 16 `transformer_blocks.*.ff_context.linear_*.input_scale` tensors flow through the BFL→SGLang name mapping at load time and land in the right runtime parameters.
+
+#### 13.3.6 Why the Filter Didn't Match
+
+A quick check before settling on the rename: the regex is `.*-mixed(?:-\d+-of-\d+)?\.safetensors$`. Walk through both filenames:
+
+| Filename | Matches? | Why |
+|----------|----------|-----|
+| `flux2-dev-nvfp4-mixed.safetensors` | ✓ | suffix `-mixed.safetensors` matches `.*-mixed\.safetensors$` |
+| `supplemental.safetensors` | ✗ | no `-mixed` before `.safetensors` |
+| `supplemental-mixed.safetensors` | ✓ | suffix `-mixed.safetensors` matches |
+
+Renaming is sufficient and minimally invasive.
+
+---
+
+### 13.4 Sub-Cause C: Stale Supplemental Cache Reused Without Validation
+
+#### 13.4.1 Symptom
+
+During iterative debugging of RC4-A and RC4-B, the supplemental `/tmp/sglang_nvfp4_supp_<hash>/` directory persisted across runs. The original RC2 fix used a deterministic hash of the mixed-file path as the temp-dir name and reused the dir if `supplemental.safetensors` already existed:
+
+```python
+# Original RC2 implementation:
+mixed_link = os.path.join(supp_dir, mixed_name)
+supp_path = os.path.join(supp_dir, "supplemental.safetensors")
+
+if os.path.isfile(supp_path) and os.path.exists(mixed_link):
+    return supp_dir   # ← reused without inspecting contents
+```
+
+The intent was to avoid re-extracting 64 tensors on every server start. The implementation was fine for the original RC2 fix. It became a problem in two scenarios:
+
+1. **A supplemental file generated by an older builder** (e.g. before the `txt_mlp.*.input_scale` set was identified, or before the RC4-A fix changed which keys are needed) survives unchanged across runs.
+2. **The supplemental file is renamed** (RC4-B). The cache still has the old `supplemental.safetensors`; the new code now writes `supplemental-mixed.safetensors`. Both files coexist; the cache check sees the new file is missing, regenerates it, but the old one is still there — and the loader still applies the `*-mixed.safetensors` filter, so the stale `supplemental.safetensors` is dropped (no harm), and the new `supplemental-mixed.safetensors` is loaded (correct). This case happens to recover, but it's accidental.
+
+The first scenario is the dangerous one: a stale supplemental whose key set no longer matches the current expectation produces a quiet correctness failure with no warning.
+
+#### 13.4.2 The Fix
+
+Compute the expected extra-key set up-front, validate the cached supplemental against it, and rebuild on mismatch with a loud warning:
+
+```python
+with safe_open(mixed_file, framework="pt", device="cpu") as f:
+    mixed_keys = set(f.keys())
+with safe_open(non_mixed_path, framework="pt", device="cpu") as f:
+    non_mixed_keys = set(f.keys())
+
+expected_extra_keys = non_mixed_keys - mixed_keys
+if not expected_extra_keys:
+    return None
+
+# ... mixed_link, supp_path setup ...
+
+if os.path.isfile(supp_path) and os.path.exists(mixed_link):
+    with safe_open(supp_path, framework="pt", device="cpu") as f:
+        supplemental_keys = set(f.keys())
+    if supplemental_keys == expected_extra_keys:
+        return supp_dir
+    logger.warning(
+        "Rebuilding stale FLUX.2 NVFP4 supplemental cache at %s: expected %d "
+        "tensor(s), found %d",
+        supp_dir, len(expected_extra_keys), len(supplemental_keys),
+    )
+
+# ... fall through to fresh extraction ...
+```
+
+The validation is a set-equality check, not a subset check — extras are as bad as missing keys (they indicate a stale or different builder).
+
+#### 13.4.3 Why This Matters Beyond the Iteration Loop
+
+Without RC4-C, the failure mode for a stale cache is:
+- `supplemental.safetensors` exists with old contents
+- `_build_supplemental_safetensors_dir()` returns the supp dir without rebuilding
+- The loader (with RC4-B fix) loads the supplemental — but its keys are stale
+- Some expected tensors are missing → `Found unloaded parameters in meta state dict` warning
+- The model runs but with wrong activation scaling for the missing layers
+
+This is exactly the original RC2 failure mode, re-introduced by a stale cache. The original RC2 detection (key-set diff with the full checkpoint) was correct but not idempotent against builder evolution.
+
+#### 13.4.4 Proof
+
+A focused unit test (`test_flux2_nvfp4.py:test_rebuilds_stale_supplemental_cache`) constructs a mixed checkpoint with one missing tensor, builds the supplemental once, **manually overwrites the supplemental with empty contents** to simulate a stale builder, and asserts that a second call to `_build_supplemental_safetensors_dir()` rebuilds the file:
+
+```python
+# 1. Build supplemental for the first time
+supp_dir = Path(_build_supplemental_safetensors_dir(str(mixed_file)))
+self.assertTrue((supp_dir / "supplemental-mixed.safetensors").is_file())
+
+# 2. Stale-cache simulation: overwrite with empty contents
+save_file({}, str(supp_dir / "supplemental-mixed.safetensors"))
+
+# 3. Second build should detect the mismatch and rebuild
+rebuilt_dir = Path(_build_supplemental_safetensors_dir(str(mixed_file)))
+self.assertEqual(supp_dir, rebuilt_dir)
+
+# 4. Verify the rebuilt file has the expected key
+with safe_open(rebuilt_dir / "supplemental-mixed.safetensors",
+               framework="pt", device="cpu") as f:
+    self.assertIn("double_blocks.0.txt_mlp.0.input_scale", set(f.keys()))
+```
+
+The test passes after RC4-C is applied; before the fix, the second `_build_supplemental_safetensors_dir()` call would short-circuit on `os.path.isfile(supp_path)` and return the empty supplemental, leaving `double_blocks.0.txt_mlp.0.input_scale` unloaded.
+
+---
+
+### 13.5 Dead Ends Along the RC4 Investigation
+
+#### DE-RC4-1: "rotary_emb=None must be a model wrapper bug"
+
+**What happened**: The first attempt to run the rebased branch hit `AttributeError: 'NoneType' object has no attribute 'forward'` at `flux.py:520` when calling `rotary_emb.forward(img_ids)`. `denoising.py:624` calls `getattr(self.transformer, "rotary_emb", None)` and silently returns `None` when the attribute is missing. Quick code archaeology suggested the `Flux2Transformer2DModel` DiT has `self.rotary_emb = Flux2PosEmbed(...)` in its `__init__`, so the attribute *should* exist. We hypothesized that `self.transformer` was being wrapped by some new layer (FSDP, device-manager, layerwise-offload mixin) that didn't forward `rotary_emb` through.
+
+**Why it was wrong**: There's no wrapper. `self.transformer` is the raw `Flux2Transformer2DModel` instance — except it's actually the *native diffusers* `Flux2Transformer2DModel`, loaded via the silent fallback path. The native diffusers class has `pos_embed`, not `rotary_emb`. `getattr(...)` returned None because the attribute genuinely didn't exist on the *fallen-back* class.
+
+**Lesson**: When a `getattr(obj, attr, default)` returns the default, ask "is this the object I think it is?" before "is this attribute being stripped by a wrapper?" Type identity matters — `type(self.transformer).__name__` is the first thing to print.
+
+#### DE-RC4-2: "Codex's `rotary_emb = pos_embed` alias is the right fix"
+
+**What happened**: An automated debugging session proposed patching the loader to alias `rotary_emb = pos_embed` whenever the native diffusers fallback fired, so `denoising.py`'s `getattr(...)` would find a usable RoPE module. This was technically a valid workaround — the pipeline would no longer crash.
+
+**Why it was wrong**: It papered over the *real* bug — that the fallback was firing at all. The alias would let the pipeline run, but it would run as **native diffusers BF16** with no NVFP4 quantization. RC1, RC2, and RC3 would all be dead code. The image-quality test would pass because BF16 always works, but the PR's actual purpose (NVFP4 correctness on Blackwell) would never be exercised. We rejected the alias and went looking for the proximate cause of the fallback (the `proj_out` shape assertion) instead.
+
+**Lesson**: A patch that silences a symptom in the wrong code path is worse than no patch at all — it removes the test signal that could have caught the underlying regression. Always ask "does my fix put us on the code path I'm trying to test?" before merging.
+
+#### DE-RC4-3: "After RC4-A, the supplemental should just work"
+
+**What happened**: After RC4-A removed the `proj_out` shape assertion, we ran end-to-end and saw a successful generation — but with the wrong pixel stats (`mean≈219, std≈12` again). It was tempting to declare RC4-A insufficient and start hunting for a fourth correctness bug elsewhere.
+
+**Why it was wrong**: The actual issue (RC4-B, supplemental filename) had been silently present all along — its symptom (`Found unloaded parameters` warning) was being printed but had been overlooked because the `proj_out` assertion was the louder signal. Once RC4-A cleared the assertion, the pre-existing warning became the *current* loudest signal, but only if you went looking for it. Re-reading the full loader log line by line is what surfaced the `Using 1 mixed safetensors file(s) and ignoring 1 sibling non-mixed file(s)` line.
+
+**Lesson**: When a fix unblocks progress but the symptom doesn't fully resolve, don't assume "additional unrelated bug." Re-grep the full log for warnings that may have been masked by louder errors. Each fix can expose the next, just like in the original two-day investigation.
+
+#### DE-RC4-4: "The supplemental cache is fine to leave in /tmp"
+
+**What happened**: During the RC4-A and RC4-B iteration, we noticed a stale `/tmp/sglang_nvfp4_supp_<hash>/` directory from earlier runs. We initially left it in place, reasoning that the deterministic-hash naming would make it self-correcting.
+
+**Why it was wrong**: Self-correction only works if the cache check validates contents, not just filenames. The original RC2 implementation only checked for the file's *existence*. After RC4-B renamed `supplemental.safetensors` to `supplemental-mixed.safetensors`, both files coexisted in the cache; the new code path created the new file (good) but didn't notice that the old file was still around (irrelevant in this case but masked the symptom in others). More importantly, a supplemental from a *different builder* could survive indefinitely with no warning. RC4-C made the cache check a content-equality check; the dead end is what motivated that fix.
+
+**Lesson**: Caches without content validation are silent footguns. Either invalidate aggressively (re-extract every run) or validate by content (set-equality of expected keys).
+
+---
+
+### 13.6 Verification After All RC4 Sub-Fixes
+
+After RC4-A + RC4-B + RC4-C, on a freshly-cleaned `/tmp` cache, end-to-end FLUX.2-dev-NVFP4 generation on B200 produces:
+
+**Loader log (key lines)**:
+```
+[INFO] Using mixed-precision NVFP4 weights: .../flux2-dev-nvfp4-mixed.safetensors
+[INFO] Supplemented mixed NVFP4 checkpoint with 64 missing tensor(s) from
+       flux2-dev-nvfp4.safetensors → /tmp/sglang_nvfp4_supp_<hash>
+[INFO] Loading Flux2Transformer2DModel from 2 safetensors file(s)
+[INFO] Loaded transformer: Flux2Transformer2DModel (sgl-diffusion version).
+       model size: 22.9 GB
+```
+
+**No** `falling back to native version` line.
+**No** `Found unloaded parameters in meta state dict` warning.
+
+**Image stats**:
+```
+NVFP4 (this branch): min=0  max=255  mean=214.43  std=79.61
+BF16 reference:      min=0  max=255  mean=215.9   std=82.58
+                                     Δ=0.7%       Δ=3.6%
+```
+
+**Wall time**: 24.56s for 12 denoising steps (768×768) on a single B200, with the custom NVFP4 path (22.9 GB on GPU) versus what the broken native fallback would have been (120 GB on GPU + slower BF16 path).
+
+**Diagnostic-summary table for RC4** (matching the format used for RC1–RC3):
+
+| Sub-cause | Diagnostic tool | Signature |
+|---|---|---|
+| RC4-A: Mapped vs raw module name | Custom-loader log | `AssertionError: Failed to shard/load parameter proj_out.weight, full=(128, 6144), meta=(128, 3072)` |
+| RC4-B: Supplemental filename | Loader-info line | `Using 1 mixed transformer safetensors file(s) and ignoring 1 sibling non-mixed file(s)` |
+| RC4-C: Stale cache | Persistent `/tmp` dir + `Found unloaded parameters` returns after iteration | Old supplemental key set ≠ current expected set |
+
+---
+
+### 13.7 Why the Original 2-Day Investigation Did Not Catch This
+
+A natural question after RC4 is: how did the original investigation produce a "PR-ready" branch that was dead code on current `main`? Three reasons:
+
+1. **The branch base was old.** The original investigation ran against `a4cf2ea` — the `sgl-project/sglang:main` tip *at the time*. On that base, the custom NVFP4 loader worked, the `*-mixed.safetensors` filter behaved as intended, and the original three fixes ran exactly as designed. Run B from the rebase verification (worktree at `e43fa66`, the original fix tip) reproduced the correct image (`mean=215.8, std=80.84`) — proving the original fixes were correct *for that base*.
+
+2. **The drift on `main` was indirect.** Between `a4cf2ea` and current `main` (at the time of the PR-prep rebase, `465abad`), no commit on `main` directly touched the three NVFP4 fix files. The diff is ~9.7k lines across upstream features, CI workflows, model additions, etc. The relevant change was much subtler:
+
+   - At some point on `main`, the `_prefer_mixed_safetensors_files()` filter was added or strengthened. The original RC2 implementation chose `supplemental.safetensors` as a name that wouldn't trigger duplicate-key validation; that constraint was satisfied at the time. The new filter introduced a different constraint — *the filename must match `*-mixed.safetensors`* — that the supplemental name did not satisfy. Two independent decisions interacted.
+   - Similarly, the `exclude_modules` consumer side of `quantization_utils.py` evolved on `main`. The original raw-BFL-name behavior may have happened to work when the consumer was lenient about which namespace the names lived in; current `main`'s consumer is keyed strictly by mapped names.
+
+   Neither change triggered a merge conflict during the rebase, because neither touched the three NVFP4 fix files. The contract drift was *implicit*.
+
+3. **Verification was image-pixel-based, not loader-log-based.** The original verification declared success when `mean=215.8, std=80.84` matched BF16. That's a strong signal of GEMM-level correctness, but it's a weak signal of *loader-path* correctness. If the rebased branch had silently switched to the BF16 fallback path, image stats would still match BF16 (the BF16 path generates a BF16 image), and the test would still pass. The signal that catches RC4 is the loader log: `model size: 22.9 GB` (custom path) vs `120.04 GB` (fallback). RC4 was caught only because someone looked at the log and noticed the wrong number.
+
+**Generalized lesson**: When a quantization fix lives on a code path that has a silent fallback, image-quality verification alone is insufficient. The verification must include a check that *the intended code path actually ran*. For NVFP4: assert `model size ≈ 22.9 GB`, assert no `falling back to native version` line, assert no `Found unloaded parameters` warning. These are cheap log-grep tests that should run as part of any future NVFP4 CI verification. See updated **Guard 6** in Section 12 for the implementation sketch.
 
 ---
 
